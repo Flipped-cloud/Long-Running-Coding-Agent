@@ -44,12 +44,22 @@ python -m pip install -e ".[dev]"
 
 ## Configure
 
-Copy `.env.example` and set the API key for real model calls:
+`.env.example` documents variable names only. The program does not automatically load `.env` files. Copying `.env.example` has no effect unless you manually source/export those variables in your shell.
+
+For WSL2/Linux:
 
 ```bash
-set OPENAI_API_KEY=your-key
-set MODEL_NAME=your-model
-set OPENAI_BASE_URL=https://your-compatible-endpoint/v1
+export OPENAI_API_KEY="your-key"
+export MODEL_NAME="your-model"
+export OPENAI_BASE_URL="https://your-compatible-endpoint/v1"
+```
+
+For PowerShell:
+
+```powershell
+$env:OPENAI_API_KEY="your-key"
+$env:MODEL_NAME="your-model"
+$env:OPENAI_BASE_URL="https://your-compatible-endpoint/v1"
 ```
 
 `configs/baseline.yaml` uses the real OpenAI-compatible provider. `configs/fake.yaml` uses the deterministic fake provider and does not require an API key.
@@ -95,6 +105,10 @@ python -m pytest -q
 ```
 
 Reset it after a demo:
+
+```bash
+git restore examples/toy_repo/calculator.py
+```
 
 ```powershell
 .\examples\toy_repo\reset_toy_repo.ps1

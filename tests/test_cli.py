@@ -7,7 +7,7 @@ from longrun_agent.cli import app
 runner = CliRunner()
 
 
-def write_fake_config(path: Path, workspace: Path, run_root: Path) -> None:
+def write_fake_config(path: Path, workspace: Path, run_root: Path, *, max_consecutive_errors: int = 5) -> None:
     path.write_text(
         f"""
 model:
@@ -21,7 +21,7 @@ model:
   max_api_retries: 1
 agent:
   max_steps: 10
-  max_consecutive_errors: 5
+  max_consecutive_errors: {max_consecutive_errors}
 workspace:
   root: {workspace.as_posix()}
 tools:
@@ -42,6 +42,12 @@ telemetry:
 """,
         encoding="utf-8",
     )
+
+
+def write_script(path: Path, items: list[dict]) -> None:
+    import json
+
+    path.write_text(json.dumps(items), encoding="utf-8")
 
 
 def make_repo(path: Path) -> None:
@@ -86,3 +92,51 @@ def test_cli_fake_provider_run_repairs_repo(tmp_path: Path):
     assert result.exit_code == 0
     assert "completed" in result.stdout
     assert "return a / b" in (repo / "calculator.py").read_text(encoding="utf-8")
+
+
+def test_cli_completed_exit_code_is_zero_without_api_key(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = tmp_path / "fake.yaml"
+    script = tmp_path / "script.json"
+    write_fake_config(config, repo, tmp_path / ".runs")
+    write_script(script, [{"final_answer": "done"}])
+    result = runner.invoke(app, ["run", "--config", str(config), "--fake-provider", "--scripted-responses", str(script)])
+    assert result.exit_code == 0
+    assert "completed" in result.stdout
+
+
+def test_cli_max_steps_exit_code_is_one(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = tmp_path / "fake.yaml"
+    script = tmp_path / "script.json"
+    write_fake_config(config, repo, tmp_path / ".runs")
+    write_script(script, [{"tool_calls": [{"id": "r1", "name": "read_file", "arguments": {"path": "missing.txt"}}]}])
+    result = runner.invoke(
+        app,
+        ["run", "--config", str(config), "--fake-provider", "--scripted-responses", str(script), "--max-steps", "1"],
+    )
+    assert result.exit_code == 1
+    assert "max_steps_reached" in result.stdout
+
+
+def test_cli_protocol_error_exit_code_is_one(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = tmp_path / "fake.yaml"
+    script = tmp_path / "script.json"
+    write_fake_config(config, repo, tmp_path / ".runs", max_consecutive_errors=2)
+    write_script(script, [{}, {}])
+    result = runner.invoke(
+        app,
+        ["run", "--config", str(config), "--fake-provider", "--scripted-responses", str(script)],
+    )
+    assert result.exit_code == 1
+    assert "aborted" in result.stdout
+
+
+def test_cli_missing_config_returns_nonzero():
+    result = runner.invoke(app, ["run", "--config", "does-not-exist.yaml", "--fake-provider"])
+    assert result.exit_code != 0

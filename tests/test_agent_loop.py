@@ -92,6 +92,11 @@ def test_agent_loop_stops_at_max_steps(tmp_path: Path):
     ]
     result = AgentLoop(config(repo, tmp_path / ".runs", max_steps=1), FakeModelProvider(responses), run_id="run3").run(repo, "loop")
     assert result.status == RunStatus.MAX_STEPS_REACHED
+    assert result.final_answer is None
+    assert Path(result.run_json_path).exists()
+    events = [json.loads(line) for line in Path(result.event_log_path).read_text(encoding="utf-8").splitlines()]
+    assert events[-1]["event_type"] == "run_finished"
+    assert events[-1]["success"] is False
 
 
 def test_agent_loop_provider_exception_status(tmp_path: Path):
@@ -99,6 +104,46 @@ def test_agent_loop_provider_exception_status(tmp_path: Path):
     repo.mkdir()
     result = AgentLoop(config(repo, tmp_path / ".runs"), RaisingProvider(), run_id="run4").run(repo, "task")
     assert result.status == RunStatus.PROVIDER_ERROR
+    assert Path(result.run_json_path).exists()
+    events = [json.loads(line) for line in Path(result.event_log_path).read_text(encoding="utf-8").splitlines()]
+    assert "provider_error" in {event["event_type"] for event in events}
+    assert events[-1]["event_type"] == "run_finished"
+    assert events[-1]["success"] is False
+
+
+def test_agent_loop_aborts_after_consecutive_empty_responses(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    responses = [ModelResponse(), ModelResponse()]
+    result = AgentLoop(config(repo, tmp_path / ".runs"), FakeModelProvider(responses), run_id="run-empty").run(repo, "task")
+    assert result.status == RunStatus.ABORTED
+    assert result.final_answer is None
+    assert result.consecutive_errors == 2
+    assert Path(result.event_log_path).exists()
+    assert Path(result.run_json_path).exists()
+    events = [json.loads(line) for line in Path(result.event_log_path).read_text(encoding="utf-8").splitlines()]
+    assert [event["event_type"] for event in events].count("protocol_error") == 2
+    assert events[-1]["event_type"] == "run_finished"
+    assert events[-1]["success"] is False
+
+
+def test_agent_loop_aborts_after_consecutive_unknown_tools(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    responses = [
+        ModelResponse(tool_calls=[ToolCall(id="bad-1", name="missing_tool", arguments={})]),
+        ModelResponse(tool_calls=[ToolCall(id="bad-2", name="missing_tool", arguments={})]),
+    ]
+    result = AgentLoop(config(repo, tmp_path / ".runs"), FakeModelProvider(responses), run_id="run-tools").run(repo, "task")
+    assert result.status == RunStatus.ABORTED
+    assert result.consecutive_errors == 2
+    assert result.final_answer is None
+    events = [json.loads(line) for line in Path(result.event_log_path).read_text(encoding="utf-8").splitlines()]
+    failed_tool_events = [event for event in events if event["event_type"] == "tool_finished" and event["tool_name"] == "missing_tool"]
+    assert len(failed_tool_events) == 2
+    assert all(event["success"] is False for event in failed_tool_events)
+    assert events[-1]["event_type"] == "run_finished"
+    assert events[-1]["success"] is False
 
 
 def test_fake_provider_response_exhaustion():

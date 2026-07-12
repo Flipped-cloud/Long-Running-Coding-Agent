@@ -8,14 +8,31 @@ from typing import Any
 
 from longrun_agent.protocol import EventRecord, RunResult
 
-SECRET_HINTS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
+SENSITIVE_KEY_NAMES = {
+    "api_key",
+    "openai_api_key",
+    "model_api_key",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "authorization",
+    "password",
+    "client_secret",
+    "secret",
+}
+SENSITIVE_KEY_SUFFIXES = ("_api_key", "_access_token", "_refresh_token", "_id_token", "_password", "_secret")
+
+
+def is_sensitive_key(key: str) -> bool:
+    normalized = key.strip().lower().replace("-", "_")
+    return normalized in SENSITIVE_KEY_NAMES or normalized.endswith(SENSITIVE_KEY_SUFFIXES)
 
 
 def sanitize_payload(value: Any) -> Any:
     if isinstance(value, dict):
         sanitized: dict[str, Any] = {}
         for key, item in value.items():
-            if any(hint in key.upper() for hint in SECRET_HINTS):
+            if is_sensitive_key(key):
                 sanitized[key] = "[redacted]"
             else:
                 sanitized[key] = sanitize_payload(item)
