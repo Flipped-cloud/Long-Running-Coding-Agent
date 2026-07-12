@@ -1,0 +1,33 @@
+model:
+  provider: fake
+  model_name: fake-scripted
+  base_url: null
+  api_key_env: MODEL_API_KEY
+  temperature: 0.0
+  max_output_tokens: 1024
+  request_timeout_seconds: 30
+  max_api_retries: 1
+
+agent:
+  max_steps: 10
+  max_consecutive_errors: 5
+
+workspace:
+  root: ../examples/toy_repo
+
+tools:
+  read_file:
+    max_lines: 200
+    max_chars: 30000
+  write_file:
+    max_chars: 200000
+    save_diff: true
+  bash:
+    timeout_seconds: 30
+    max_output_chars: 20000
+    shell: false
+
+telemetry:
+  run_root: ../.runs
+  save_prompts: true
+  save_full_tool_outputs: true

@@ -1,0 +1,33 @@
+model:
+  provider: openai_compatible
+  model_name: "${MODEL_NAME}"
+  base_url: "${OPENAI_BASE_URL}"
+  api_key_env: OPENAI_API_KEY
+  temperature: 0.2
+  max_output_tokens: 4096
+  request_timeout_seconds: 120
+  max_api_retries: 3
+
+agent:
+  max_steps: 30
+  max_consecutive_errors: 5
+
+workspace:
+  root: ../examples/toy_repo
+
+tools:
+  read_file:
+    max_lines: 200
+    max_chars: 30000
+  write_file:
+    max_chars: 200000
+    save_diff: true
+  bash:
+    timeout_seconds: 120
+    max_output_chars: 20000
+    shell: false
+
+telemetry:
+  run_root: ../.runs
+  save_prompts: true
+  save_full_tool_outputs: true
