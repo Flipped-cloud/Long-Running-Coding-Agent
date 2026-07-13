@@ -1,0 +1,66 @@
+model:
+  provider: openai_compatible
+  model_name: "${MODEL_NAME}"
+  base_url: "${OPENAI_BASE_URL}"
+  api_key_env: OPENAI_API_KEY
+  temperature: 0.0
+  max_output_tokens: 1536
+  request_timeout_seconds: 45
+  max_api_retries: 1
+
+agent:
+  max_steps: 14
+  max_consecutive_errors: 3
+  max_session_seconds: 150
+
+workspace:
+  root: ../examples/task_service_repo
+
+tools:
+  read_file:
+    max_lines: 250
+    max_chars: 35000
+  write_file:
+    max_chars: 200000
+    save_diff: true
+  bash:
+    timeout_seconds: 60
+    max_output_chars: 16000
+    shell: false
+
+telemetry:
+  run_root: ../.runs
+  save_prompts: true
+  save_full_tool_outputs: true
+
+planning:
+  mode: static
+  initial_plan:
+    min_tasks: 2
+    max_tasks: 3
+    max_protocol_retries: 3
+  execution:
+    max_project_sessions: 6
+    attempts_before_decomposition: 1
+    max_project_seconds: 540
+    max_sessions_per_task: 2
+    max_no_progress_sessions: 1
+    final_verification_command:
+      - python
+      - -m
+      - pytest
+      - -q
+    final_verification_timeout_seconds: 90
+  decomposition:
+    max_depth: 2
+    min_children: 2
+    max_children: 3
+    max_protocol_retries: 1
+  bounded_search:
+    enabled: false
+    candidate_count: 2
+    max_protocol_retries: 1
+
+state:
+  root: ../.runs/projects
+  atomic_write: true

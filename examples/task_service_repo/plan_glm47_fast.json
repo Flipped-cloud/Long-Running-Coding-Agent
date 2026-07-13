@@ -1,0 +1,51 @@
+{
+  "project_summary": "Implement and verify the task service requirements in four focused tasks.",
+  "tasks": [
+    {
+      "key": "model-validation",
+      "title": "Fix Task model validation",
+      "objective": "Inspect task_service/model.py and the focused validation tests. Update validate_task so it rejects non-Task input with the required ValueError, rejects bool attempts, rejects negative attempts, and preserves the required exact error messages. If the focused validation test file is unexpectedly missing, create it from the stated behavioral requirements instead of reporting a blocker. Run the focused validation tests before requesting completion.",
+      "acceptance_criteria": [
+        "validate_task rejects a dict with ValueError('invalid task: expected a Task instance, got dict')",
+        "validate_task rejects bool attempts with the required exact ValueError message",
+        "validate_task rejects negative attempts with the required exact ValueError message",
+        "python -m pytest -q tests/test_gap_coverage.py passes"
+      ],
+      "depends_on_keys": []
+    },
+    {
+      "key": "persistence-retry",
+      "title": "Fix persistence and retry behavior",
+      "objective": "Only inspect and modify task_service/storage.py, task_service/service.py, and directly related tests. Ensure save_tasks creates missing parent directories and retry on a missing task raises a clear ValueError containing 'unknown task id: missing'. Add focused tests and run them before requesting completion.",
+      "acceptance_criteria": [
+        "Nested JSON persistence succeeds",
+        "Retrying a missing task raises the required explicit ValueError",
+        "python -m pytest -q tests/test_service.py passes"
+      ],
+      "depends_on_keys": []
+    },
+    {
+      "key": "cli-query",
+      "title": "Implement CLI get command",
+      "objective": "Only inspect and modify task_service/cli.py and directly related tests. Add a get command that looks up a task by ID, prints the matching task, and exits non-zero with a clear error when the task is missing. Preserve add, list, and complete behavior. Run focused CLI tests before requesting completion.",
+      "acceptance_criteria": [
+        "python -m task_service.cli get --db <path> --id <id> prints the matching task",
+        "A missing task ID produces a non-zero exit code and a clear error",
+        "Existing CLI behavior remains functional"
+      ],
+      "depends_on_keys": ["model-validation", "persistence-retry"]
+    },
+    {
+      "key": "integration",
+      "title": "Complete tests, documentation, and integration verification",
+      "objective": "Inspect the completed dependency changes, add only missing tests, update README.md with the CLI get example, run the complete test suite, and fix any remaining integration failures. Do not redesign already passing code.",
+      "acceptance_criteria": [
+        "python -m pytest -q passes",
+        "python scripts/validate_task_service_result.py --repo examples/task_service_repo passes when run from the parent repository",
+        "README documents the get command",
+        "All requested behavior is independently verifiable"
+      ],
+      "depends_on_keys": ["model-validation", "persistence-retry", "cli-query"]
+    }
+  ]
+}

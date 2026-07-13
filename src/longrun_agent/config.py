@@ -49,6 +49,9 @@ class AgentConfig(BaseModel):
 
     max_steps: int = Field(default=30, ge=1)
     max_consecutive_errors: int = Field(default=5, ge=1)
+    max_session_seconds: int = Field(default=180, ge=10)
+    terminal_grace_turns: int = Field(default=0, ge=0, le=3)
+    protocol_retries_per_step: int = Field(default=2, ge=0, le=5)
 
 
 class WorkspaceConfig(BaseModel):
@@ -115,6 +118,74 @@ class TelemetryConfig(BaseModel):
     save_full_tool_outputs: bool = True
 
 
+class InitialPlanConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["model", "file"] = "model"
+    plan_file: Path | None = None
+    min_tasks: int = Field(default=2, ge=1)
+    max_tasks: int = Field(default=8, ge=1)
+    max_protocol_retries: int = Field(default=2, ge=1)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> InitialPlanConfig:
+        if self.min_tasks > self.max_tasks:
+            raise ValueError("planning.initial_plan.min_tasks must be <= max_tasks")
+        return self
+
+
+class PlanningExecutionConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    max_project_sessions: int = Field(default=30, ge=1)
+    attempts_before_decomposition: int = Field(default=1, ge=1)
+    max_project_seconds: int = Field(default=540, ge=30)
+    max_sessions_per_task: int = Field(default=2, ge=1)
+    max_no_progress_sessions: int = Field(default=1, ge=0)
+    final_verification_command: list[str] = Field(default_factory=lambda: ["python", "-m", "pytest", "-q"])
+    final_verification_timeout_seconds: int = Field(default=90, ge=1)
+
+
+class DecompositionConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    max_depth: int = Field(default=3, ge=1)
+    min_children: int = Field(default=2, ge=1)
+    max_children: int = Field(default=5, ge=1)
+    max_protocol_retries: int = Field(default=2, ge=1)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> DecompositionConfig:
+        if self.min_children > self.max_children:
+            raise ValueError("planning.decomposition.min_children must be <= max_children")
+        return self
+
+
+class BoundedSearchConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    candidate_count: int = Field(default=3, ge=2, le=5)
+    max_protocol_retries: int = Field(default=2, ge=1)
+
+
+class PlanningConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["disabled", "static", "adaptive", "adaptive_search"] = "disabled"
+    initial_plan: InitialPlanConfig = Field(default_factory=InitialPlanConfig)
+    execution: PlanningExecutionConfig = Field(default_factory=PlanningExecutionConfig)
+    decomposition: DecompositionConfig = Field(default_factory=DecompositionConfig)
+    bounded_search: BoundedSearchConfig = Field(default_factory=BoundedSearchConfig)
+
+
+class StateConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    root: Path = Path(".runs/projects")
+    atomic_write: bool = True
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -123,6 +194,8 @@ class AppConfig(BaseModel):
     workspace: WorkspaceConfig
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
+    planning: PlanningConfig = Field(default_factory=PlanningConfig)
+    state: StateConfig = Field(default_factory=StateConfig)
     config_dir: Path = Field(default=Path("."), exclude=True)
 
     @model_validator(mode="after")
@@ -132,6 +205,10 @@ class AppConfig(BaseModel):
             self.workspace.root = (base / self.workspace.root).resolve()
         if not self.telemetry.run_root.is_absolute():
             self.telemetry.run_root = (base / self.telemetry.run_root).resolve()
+        if not self.state.root.is_absolute():
+            self.state.root = (base / self.state.root).resolve()
+        if self.planning.initial_plan.plan_file is not None and not self.planning.initial_plan.plan_file.is_absolute():
+            self.planning.initial_plan.plan_file = (base / self.planning.initial_plan.plan_file).resolve()
         return self
 
     def sanitized(self) -> dict[str, Any]:

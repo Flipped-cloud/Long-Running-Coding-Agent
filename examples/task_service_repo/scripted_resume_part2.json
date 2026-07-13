@@ -1,0 +1,34 @@
+[
+  {
+    "tool_calls": [
+      {
+        "id": "resume-part2-read",
+        "name": "read_file",
+        "arguments": {
+          "path": "README.md"
+        }
+      },
+      {
+        "id": "resume-part2-progress",
+        "name": "report_progress",
+        "arguments": {
+          "summary": "Resumed from persisted state and inspected README.md.",
+          "files_touched": [
+            "README.md"
+          ]
+        }
+      },
+      {
+        "id": "resume-part2-complete",
+        "name": "request_task_completion",
+        "arguments": {
+          "summary": "Resumed execution completed without repeating T1.",
+          "acceptance_criteria_addressed": [
+            "README.md has been inspected after resume",
+            "The resumed task has requested candidate completion"
+          ]
+        }
+      }
+    ]
+  }
+]

@@ -17,8 +17,22 @@ class ProtocolError(LongRunAgentError):
     """Raised when a provider response cannot be normalized."""
 
 
+class ToolArgumentsProtocolError(ProtocolError):
+    """Raised when a model emits non-JSON tool arguments."""
+
+    def __init__(self, tool_name: str, parse_error: str, raw_arguments: str):
+        super().__init__(f"invalid tool call JSON for {tool_name}: {parse_error}")
+        self.tool_name = tool_name
+        self.parse_error = parse_error
+        self.raw_arguments = raw_arguments
+
+
 class ToolExecutionError(LongRunAgentError):
     """Raised for internal tool execution failures."""
+
+
+class StateStoreError(LongRunAgentError):
+    """Raised when project state artifacts cannot be read or written safely."""
 
 
 class WorkspaceSecurityError(LongRunAgentError, ValueError):

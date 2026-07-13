@@ -8,15 +8,26 @@ import subprocess
 import sys
 import time
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from longrun_agent.protocol import ErrorType, ToolResult
 from longrun_agent.tools.base import BaseTool, ToolContext
+from longrun_agent.tools.path_guard import ensure_workspace_root, is_inside_path
 
 
 class BashArgs(BaseModel):
-    command: str = Field(min_length=1)
+    command: str | None = Field(default=None, min_length=1)
+    argv: list[str] | None = None
+    cwd: str = "."
     timeout: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def require_command_or_argv(self) -> BashArgs:
+        if self.argv is None and not self.command:
+            raise ValueError("bash requires either argv or command")
+        if self.argv is not None and not self.argv:
+            raise ValueError("bash argv must not be empty")
+        return self
 
 
 DENY_PATTERNS = [
@@ -31,6 +42,7 @@ DENY_PATTERNS = [
     r"\bpasswd\b",
 ]
 DESTRUCTIVE_WITH_ABSOLUTE_PATH = re.compile(r"\b(rm|del|erase|rmdir)\b.*(\s/|\s[A-Za-z]:\\)")
+UNSUPPORTED_SHELL_TOKENS = ("&&", "||", "|", ">", "<", ";")
 
 
 def _reject_reason(command: str) -> str | None:
@@ -42,10 +54,54 @@ def _reject_reason(command: str) -> str | None:
     return None
 
 
+def _unsupported_shell_syntax(command: str) -> str | None:
+    stripped = command.strip()
+    first = stripped.split(maxsplit=1)[0].lower() if stripped else ""
+    if first == "cd":
+        return "cd is not supported because commands already run in the selected cwd"
+    for token in UNSUPPORTED_SHELL_TOKENS:
+        if _contains_unquoted(command, token):
+            return f"shell syntax '{token}' is not supported when shell=false"
+    return None
+
+
+def _contains_unquoted(command: str, token: str) -> bool:
+    quote: str | None = None
+    i = 0
+    while i < len(command):
+        char = command[i]
+        if char in {"'", '"'} and (i == 0 or command[i - 1] != "\\"):
+            quote = None if quote == char else char if quote is None else quote
+        if quote is None and command.startswith(token, i):
+            return True
+        i += 1
+    return False
+
+
 def _split_command(command: str, shell: bool) -> list[str] | str:
     if shell:
         return command
     return shlex.split(command)
+
+
+def _display_command(arguments: BashArgs) -> str:
+    if arguments.argv is not None:
+        return " ".join(arguments.argv)
+    return arguments.command or ""
+
+
+def _resolve_cwd(workspace, requested: str):
+    root = ensure_workspace_root(workspace)
+    raw = os.fspath(requested)
+    path = os.path.normpath(raw or ".")
+    if os.path.isabs(path):
+        raise ValueError("absolute cwd paths are not allowed")
+    candidate = (root / path).resolve(strict=False)
+    if not is_inside_path(candidate, root):
+        raise ValueError("cwd escapes workspace")
+    if not candidate.exists():
+        raise FileNotFoundError(requested)
+    return candidate
 
 
 def _truncate_stream(name: str, value: str, limit: int) -> tuple[str, bool]:
@@ -61,7 +117,49 @@ class BashTool(BaseTool):
     args_model = BashArgs
 
     def execute(self, call_id: str, arguments: BashArgs, context: ToolContext) -> ToolResult:
-        reason = _reject_reason(arguments.command)
+        command = _display_command(arguments)
+        try:
+            cwd = _resolve_cwd(context.workspace, arguments.cwd)
+        except Exception as exc:
+            return ToolResult(
+                tool_call_id=call_id,
+                tool_name=self.name,
+                success=False,
+                summary="bash rejected: cwd escapes workspace",
+                output=str(exc),
+                error_type=ErrorType.TOOL,
+                error_message=str(exc),
+                metadata={"command": command, "cwd": arguments.cwd},
+            )
+        if not cwd.is_dir():
+            return ToolResult(
+                tool_call_id=call_id,
+                tool_name=self.name,
+                success=False,
+                summary="bash rejected: cwd is not a directory",
+                output=f"cwd is not a directory: {arguments.cwd}",
+                error_type=ErrorType.TOOL,
+                error_message="cwd is not a directory",
+                metadata={"command": command, "cwd": str(cwd)},
+            )
+        if arguments.command and not context.config.bash.shell:
+            unsupported = _unsupported_shell_syntax(arguments.command)
+            if unsupported:
+                return ToolResult(
+                    tool_call_id=call_id,
+                    tool_name=self.name,
+                    success=False,
+                    summary="unsupported_shell_syntax",
+                    output=(
+                        f"{unsupported}. Commands already run inside the workspace. "
+                        'Use argv such as {"argv": ["python", "-m", "pytest", "-q"], "cwd": "."} '
+                        'or command "python -m pytest -q" without cd, &&, pipes, redirection, or shell built-ins.'
+                    ),
+                    error_type=ErrorType.PROTOCOL,
+                    error_message="unsupported_shell_syntax",
+                    metadata={"command": command, "cwd": str(cwd), "unsupported_shell_syntax": True},
+                )
+        reason = _reject_reason(command)
         if reason:
             return ToolResult(
                 tool_call_id=call_id,
@@ -71,15 +169,15 @@ class BashTool(BaseTool):
                 output=reason,
                 error_type=ErrorType.TOOL,
                 error_message=reason,
-                metadata={"command": arguments.command, "cwd": str(context.workspace)},
+                metadata={"command": command, "cwd": str(cwd)},
             )
         timeout = min(arguments.timeout or context.config.bash.timeout_seconds, context.config.bash.timeout_seconds)
         started = time.monotonic()
         timed_out = False
         try:
-            argv = _split_command(arguments.command, context.config.bash.shell)
+            argv = arguments.argv if arguments.argv is not None else _split_command(arguments.command or "", context.config.bash.shell)
             popen_kwargs = {
-                "cwd": context.workspace,
+                "cwd": cwd,
                 "stdout": subprocess.PIPE,
                 "stderr": subprocess.PIPE,
                 "text": True,
@@ -117,8 +215,9 @@ class BashTool(BaseTool):
                 summary=f"bash finished with exit code {exit_code}",
                 output=f"{stdout_output}\n{stderr_output}",
                 metadata={
-                    "command": arguments.command,
-                    "cwd": str(context.workspace),
+                    "command": command,
+                    "argv": arguments.argv,
+                    "cwd": str(cwd),
                     "exit_code": exit_code,
                     "duration_seconds": duration,
                     "timed_out": timed_out,
@@ -141,5 +240,5 @@ class BashTool(BaseTool):
                 output=str(exc),
                 error_type=ErrorType.TOOL,
                 error_message=str(exc),
-                metadata={"command": arguments.command, "cwd": str(context.workspace)},
+                metadata={"command": command, "argv": arguments.argv, "cwd": str(cwd)},
             )

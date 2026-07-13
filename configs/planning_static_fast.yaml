@@ -1,0 +1,72 @@
+model:
+  provider: openai_compatible
+  model_name: "${MODEL_NAME}"
+  base_url: "${OPENAI_BASE_URL}"
+  api_key_env: OPENAI_API_KEY
+
+  temperature: 0.0
+
+  # 2048 可保留；主要耗时不是单次输出长度
+  max_output_tokens: 2048
+
+  request_timeout_seconds: 90
+
+  # API 网络失败时只额外重试一次
+  max_api_retries: 1
+
+agent:
+  # 让一个简单工程任务尽量在单个 Session 内完成
+  max_steps: 16
+
+  max_consecutive_errors: 3
+
+workspace:
+  root: ../examples/task_service_repo
+
+tools:
+  read_file:
+    max_lines: 300
+    max_chars: 40000
+
+  write_file:
+    max_chars: 200000
+    save_diff: true
+
+  bash:
+    timeout_seconds: 60
+    max_output_chars: 16000
+    shell: false
+
+telemetry:
+  run_root: ../.runs
+  save_prompts: true
+  save_full_tool_outputs: true
+
+planning:
+  mode: static
+
+  initial_plan:
+    # 减少计划任务数，要求模型做更粗粒度规划
+    min_tasks: 2
+    max_tasks: 3
+    max_protocol_retries: 3
+
+  execution:
+    # 3 个任务，每个任务预留约 2～3 个 Session
+    max_project_sessions: 8
+    attempts_before_decomposition: 1
+
+  decomposition:
+    max_depth: 2
+    min_children: 2
+    max_children: 3
+    max_protocol_retries: 1
+
+  bounded_search:
+    enabled: false
+    candidate_count: 2
+    max_protocol_retries: 1
+
+state:
+  root: ../.runs/projects
+  atomic_write: true

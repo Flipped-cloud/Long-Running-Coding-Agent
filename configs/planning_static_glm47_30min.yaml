@@ -1,0 +1,70 @@
+model:
+  provider: openai_compatible
+  model_name: "${MODEL_NAME}"
+  base_url: "${OPENAI_BASE_URL}"
+  api_key_env: OPENAI_API_KEY
+  temperature: 0.0
+  max_output_tokens: 1536
+  request_timeout_seconds: 60
+  max_api_retries: 1
+
+agent:
+  max_steps: 12
+  max_consecutive_errors: 3
+  max_session_seconds: 240
+  terminal_grace_turns: 1
+  protocol_retries_per_step: 2
+
+workspace:
+  root: ../examples/task_service_repo
+
+tools:
+  read_file:
+    max_lines: 180
+    max_chars: 20000
+  write_file:
+    max_chars: 200000
+    save_diff: true
+  bash:
+    timeout_seconds: 90
+    max_output_chars: 12000
+    shell: false
+
+telemetry:
+  run_root: ../.runs
+  save_prompts: true
+  save_full_tool_outputs: true
+
+planning:
+  mode: static
+  initial_plan:
+    source: file
+    plan_file: ../examples/task_service_repo/plan_glm47_fast.json
+    min_tasks: 4
+    max_tasks: 4
+    max_protocol_retries: 1
+  execution:
+    max_project_sessions: 8
+    attempts_before_decomposition: 1
+    max_project_seconds: 1680
+    max_sessions_per_task: 2
+    max_no_progress_sessions: 1
+    final_verification_command:
+      - python
+      - -m
+      - pytest
+      - -q
+    final_verification_timeout_seconds: 120
+  decomposition:
+    max_depth: 2
+    min_children: 2
+    max_children: 3
+    max_protocol_retries: 1
+  bounded_search:
+    enabled: false
+    candidate_count: 2
+    max_protocol_retries: 1
+
+state:
+  root: ../.runs/projects
+  atomic_write: true

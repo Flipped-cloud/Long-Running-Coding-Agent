@@ -35,6 +35,58 @@ flowchart TD
 - JSONL telemetry under `.runs/<run_id>/`.
 - CLI entry points for running the agent and listing tools.
 - A toy calculator repository that the fake provider can repair.
+- v0.2 project orchestration with external task state, coarse planning, deterministic task selection, as-needed decomposition, bounded recovery candidate selection, and resume.
+
+## v0.2 State-Grounded Adaptive Planning
+
+v0.2 adds a deterministic orchestration layer around the v0.1 Agent Loop. It studies external state and planning only; it still does not add memory, skills, context compaction, verification gates, handoff, or multi-agent execution.
+
+Project / Task / Session:
+
+- `Project`: the full user objective.
+- `Task`: one independently actionable subgoal in the external project plan.
+- `Session`: one `AgentLoop.run()` invocation for one active task.
+
+`RunStatus.COMPLETED` only means the model ended a session. A task becomes `CANDIDATE_COMPLETE` only when the session calls `request_task_completion`. `CANDIDATE_COMPLETE` is not `VERIFIED`; future work will add a verification gate.
+If bounded recovery selects `retry_with_guidance`, the current session ends, the guidance is recorded in task progress notes, and the task returns to `READY` so the next session prompt includes that guidance.
+Project Sessions stop immediately after a successful terminal control signal. In Project mode, a plain `FinalAnswer` is treated as a protocol problem and the loop asks for `request_task_completion`, `report_blocker`, or `request_decomposition`; it is not converted into task completion.
+
+```mermaid
+flowchart TD
+    Orchestrator["ProjectOrchestrator"] --> Store["StateStore"]
+    Orchestrator --> Selector["TaskSelector"]
+    Selector --> Loop["AgentLoop"]
+    Loop --> Signal["ControlSignal"]
+    Signal --> Transition["StateTransition"]
+    Transition --> Decomposer["Decomposer / RecoveryPlanner"]
+    Decomposer --> Store
+    Transition --> Selector
+```
+
+Task state machine:
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING
+    PENDING --> READY
+    READY --> IN_PROGRESS
+    READY --> FAILED
+    IN_PROGRESS --> BLOCKED
+    IN_PROGRESS --> CANDIDATE_COMPLETE
+    IN_PROGRESS --> DECOMPOSED
+    IN_PROGRESS --> FAILED
+    BLOCKED --> READY
+    BLOCKED --> DECOMPOSED
+```
+
+Initial Planning uses native tool calling with `submit_plan`. Plans are coarse-grained, use explicit dependencies, and start with `PENDING` tasks. As-Needed Decomposition runs only after a blocker or failed progress signal requires it. Bounded Planning Search is a depth-1 generate/evaluate/select step for recovery candidates; it is not full Tree-of-Thought BFS/DFS and does not copy or execute repository branches.
+
+Planning modes:
+
+- `disabled`: v0.1 behavior.
+- `static`: initial plan, no failure decomposition.
+- `adaptive`: initial plan plus decomposition when needed.
+- `adaptive_search`: adaptive mode plus bounded recovery candidates.
 
 ## Install
 
@@ -86,6 +138,111 @@ longrun-agent run --config configs/baseline.yaml --task "Fix the implementation 
 ```
 
 The runtime reads the API key only from the configured environment variable and does not write it to logs.
+
+## Project CLI
+
+Start a planned project:
+
+```bash
+longrun-agent project start \
+  --config configs/planning_static.yaml \
+  --task "Implement the requested multi-step repository changes." \
+  --scripted-responses examples/task_service_repo/scripted_project_static_realwork.json
+```
+
+Start from a task file:
+
+```bash
+longrun-agent project start --config configs/planning_adaptive.yaml --task-file examples/task_service_repo/TASK.md
+```
+
+Resume:
+
+```bash
+longrun-agent project resume --config configs/planning_adaptive.yaml --project-id <project-id>
+```
+
+Inspect state:
+
+```bash
+longrun-agent project status --config configs/planning_adaptive.yaml --project-id <project-id>
+longrun-agent project tree --config configs/planning_adaptive.yaml --project-id <project-id>
+longrun-agent project metrics --config configs/planning_adaptive.yaml --project-id <project-id>
+```
+
+State files are stored under `.runs/projects/<project_id>/`:
+
+```text
+project_state.json
+project_events.jsonl
+sessions.jsonl
+project_metrics.json
+plan_revisions/
+```
+
+Each session row records project/task/session IDs, run ID, attempt number, run status, start/finish time, duration, steps, tool call count, token count, terminal signal, and files touched. `project_metrics.json` is derived from `sessions.jsonl` and project state; `sessions_without_terminal_signal` is not hard-coded.
+Project metrics also report wall-clock seconds, configured project budget, time-budget exhaustion, failed tasks, no-progress sessions, repeated tool calls, changed-file count, successful test commands, and final verification status.
+
+Plan revisions are stored both in `project_state.json` and as individual JSON files under `plan_revisions/<revision_id>.json`.
+When all leaf tasks are `candidate_complete`, the harness runs `planning.execution.final_verification_command` directly in the workspace and writes `final_verification.txt`. The project becomes `candidate_complete` only if this command exits with code 0. Set the command to an empty list only for tests that need the earlier planning-only behavior.
+
+Deterministic project E2E scripts:
+
+```bash
+python examples/task_service_repo/reset_repo.py
+longrun-agent project start --config configs/planning_static.yaml --task-file examples/task_service_repo/TASK.md --scripted-responses examples/task_service_repo/scripted_project_static_realwork.json
+
+python examples/task_service_repo/reset_repo.py
+longrun-agent project start --config configs/planning_adaptive.yaml --task-file examples/task_service_repo/TASK.md --scripted-responses examples/task_service_repo/scripted_project_adaptive.json
+
+python examples/task_service_repo/reset_repo.py
+longrun-agent project start --config configs/planning_adaptive_search.yaml --task-file examples/task_service_repo/TASK.md --scripted-responses examples/task_service_repo/scripted_project_adaptive_search.json
+```
+
+Independent validation:
+
+```bash
+python scripts/validate_task_service_result.py --repo examples/task_service_repo
+python scripts/validate_project_run.py --project-dir .runs/projects/<project-id> --mode static
+```
+
+Experiment comparison:
+
+- A. v0.1 Naive Agent
+- B. Static Planning
+- C. Adaptive Decomposition
+- D. Adaptive Decomposition + Bounded Planning Search
+
+The state layer reports statistics for candidate completed tasks, blocked tasks, decomposition count, max task depth, plan revisions, recovery candidates, sessions without terminal signal, project sessions, tool calls, tokens, and duration.
+
+Real provider planning templates are available as `configs/planning_static_real.yaml`, `configs/planning_adaptive_real.yaml`, and `configs/planning_adaptive_search_real.yaml`. They use `${MODEL_NAME}`, `${OPENAI_BASE_URL}`, and `OPENAI_API_KEY`; no real key is stored in the repository.
+
+For GLM 4.7 Flash static planning with a bounded run budget:
+
+```bash
+longrun-agent project start \
+  --config configs/planning_static_glm47_10min.yaml \
+  --task-file examples/task_service_repo/TASK.md
+```
+
+This configuration uses `max_project_seconds=540`, `max_session_seconds=150`, `max_project_sessions=6`, `max_sessions_per_task=2`, and final pytest verification. It is designed to stop clearly with `failed` or `time_limit_reached` rather than claiming false completion when the model or API cannot finish in time.
+
+For a more stable 30-minute GLM 4.7 Flash evaluation:
+
+```bash
+longrun-agent project start \
+  --config configs/planning_static_glm47_30min.yaml \
+  --task-file examples/task_service_repo/TASK.md
+```
+
+This mode loads `examples/task_service_repo/plan_glm47_fast.json` instead of asking the model to create the initial plan. The fixed four-task plan reduces prompt churn, makes dependencies reproducible, and keeps each task focused on a small file set. Four atomic tasks are preferable for this repository because model validation, persistence/retry, CLI lookup, and integration verification touch different files and have different test evidence.
+
+Project Session controls for the GLM configuration:
+
+- repeated identical tool calls are suppressed;
+- three consecutive read-only successful tool calls inject an `action_required` message;
+- Project tool output returned to the model is capped while full artifacts remain on disk;
+- file-plan resume never regenerates or reloads the plan once state exists.
 
 ## Tools
 
@@ -142,9 +299,10 @@ Every JSONL line is a standalone event with step, event type, model name, action
 ```bash
 pytest -q
 pytest --cov=longrun_agent --cov-report=term-missing
-python -m compileall src
+python -m compileall -q src tests scripts
 ruff check .
 ruff format --check .
+git diff --check
 ```
 
 ## Known Limits
@@ -153,7 +311,9 @@ ruff format --check .
 - Windows native execution is supported for tests, but Linux/WSL2 is the preferred target.
 - The runtime does not judge whether a coding task is truly complete after final answer.
 - `write_file` is whole-file only; patch/edit tools are intentionally out of scope.
+- v0.2 candidate completion is planning-level only and is not externally verified.
+- Bounded planning search evaluates one level of recovery candidates; it is not full ToT search.
 
 ## Next Stage
 
-Later stages can add verification gates, task state, context management, memory, skills, handoff, and multi-agent orchestration. They are deliberately excluded from this baseline runtime.
+The next topic is Context Lifecycle. Later stages can add verification gates, context management, memory, skills, handoff, and multi-agent orchestration. They are deliberately excluded from this baseline runtime.

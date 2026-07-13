@@ -51,3 +51,32 @@ def test_bash_dangerous_command_rejected(tmp_path: Path):
     result = execute(tmp_path, {"command": "rm -rf /"})
     assert not result.success
     assert "rejected" in result.summary
+
+
+def test_bash_argv_pytest_with_cwd_dot(tmp_path: Path):
+    (tmp_path / "test_sample.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    result = execute(tmp_path, {"argv": ["python", "-m", "pytest", "-q"], "cwd": "."})
+    assert result.success
+    assert result.metadata["exit_code"] == 0
+    assert "1 passed" in result.output
+
+
+def test_bash_cwd_escape_rejected(tmp_path: Path):
+    result = execute(tmp_path, {"argv": ["python", "-c", "print('no')"], "cwd": ".."})
+    assert not result.success
+    assert "cwd escapes workspace" in result.summary
+
+
+def test_bash_rejects_cd_and_shell_operators_without_executing_cd(tmp_path: Path):
+    result = execute(tmp_path, {"command": "cd repo && python -m pytest -q"})
+    assert not result.success
+    assert result.summary == "unsupported_shell_syntax"
+    assert result.error_type.value == "protocol_error"
+    assert result.metadata["unsupported_shell_syntax"] is True
+    assert "Use argv" in result.output
+
+
+def test_bash_dangerous_absolute_delete_still_rejected(tmp_path: Path):
+    result = execute(tmp_path, {"argv": ["rm", "-f", "/tmp/longrun-danger"]})
+    assert not result.success
+    assert "destructive absolute-path command is not allowed" in result.output

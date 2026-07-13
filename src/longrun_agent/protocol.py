@@ -18,8 +18,12 @@ class ErrorType(StrEnum):
 class RunStatus(StrEnum):
     COMPLETED = "completed"
     MAX_STEPS_REACHED = "max_steps_reached"
+    TIME_LIMIT_REACHED = "time_limit_reached"
+    FINAL_WITHOUT_TERMINAL_SIGNAL = "final_without_terminal_signal"
+    TERMINAL_SIGNAL_MISSING = "terminal_signal_missing"
     ABORTED = "aborted"
     PROVIDER_ERROR = "provider_error"
+    PROTOCOL_ERROR = "protocol_error"
 
 
 class ToolCall(BaseModel):
@@ -96,6 +100,9 @@ class RunResult(BaseModel):
     run_json_path: str
     tool_call_count: int = 0
     total_tokens: int = 0
+    terminal_grace_turn_count: int = 0
+    terminal_signal_recovered: bool = False
+    tool_argument_protocol_retry_count: int = 0
 
 
 class EventRecord(BaseModel):

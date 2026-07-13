@@ -5,6 +5,7 @@ from tenacity import wait_none
 
 import longrun_agent.model.openai_compatible as provider_module
 from longrun_agent.config import ModelConfig
+from longrun_agent.exceptions import ToolArgumentsProtocolError
 from longrun_agent.model.openai_compatible import OpenAICompatibleProvider, _is_retryable
 
 
@@ -121,7 +122,7 @@ def test_provider_returns_multiple_tool_calls():
 
 def test_provider_invalid_tool_call_json_raises_clear_error():
     message = SimpleNamespace(content=None, tool_calls=[tool_call("c1", "read_file", "{path: calculator.py}")])
-    with pytest.raises(ValueError, match="invalid tool call JSON"):
+    with pytest.raises(ToolArgumentsProtocolError, match="invalid tool call JSON"):
         OpenAICompatibleProvider._convert_response(response_with_message(message))
 
 

@@ -1,0 +1,53 @@
+[
+  {
+    "tool_calls": [
+      {
+        "id": "plan",
+        "name": "submit_plan",
+        "arguments": {
+          "project_summary": "Task service improvements",
+          "tasks": [
+            {
+              "key": "T1",
+              "title": "Review task service",
+              "objective": "Inspect the task service code and identify the first safe improvement.",
+              "acceptance_criteria": ["Relevant files have been inspected"],
+              "depends_on_keys": []
+            },
+            {
+              "key": "T2",
+              "title": "Apply improvement",
+              "objective": "Apply one scoped improvement and run the tests.",
+              "acceptance_criteria": ["Tests have been run"],
+              "depends_on_keys": ["T1"]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "tool_calls": [
+      {
+        "id": "complete-t1",
+        "name": "request_task_completion",
+        "arguments": {
+          "summary": "Inspected the task service files.",
+          "acceptance_criteria_addressed": ["Relevant files have been inspected"]
+        }
+      }
+    ]
+  },
+  {
+    "tool_calls": [
+      {
+        "id": "complete-t2",
+        "name": "request_task_completion",
+        "arguments": {
+          "summary": "Scoped improvement path completed for the scripted demo.",
+          "acceptance_criteria_addressed": ["Tests have been run"]
+        }
+      }
+    ]
+  }
+]

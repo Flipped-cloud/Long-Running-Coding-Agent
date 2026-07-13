@@ -1,0 +1,179 @@
+[
+  {
+    "tool_calls": [
+      {
+        "id": "plan-adaptive",
+        "name": "submit_plan",
+        "arguments": {
+          "project_summary": "Adaptive task service run",
+          "tasks": [
+            {
+              "key": "T1",
+              "title": "Inspect baseline",
+              "objective": "Inspect the baseline repository and run the current tests.",
+              "acceptance_criteria": ["Baseline files inspected", "Current tests executed"],
+              "depends_on_keys": []
+            },
+            {
+              "key": "T2",
+              "title": "Implement task service improvements",
+              "objective": "Implement the task service improvements from TASK.md.",
+              "acceptance_criteria": ["All improvements are implemented", "Tests pass"],
+              "depends_on_keys": ["T1"]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "tool_calls": [
+      {"id": "a-t1-read", "name": "read_file", "arguments": {"path": "TASK.md"}},
+      {"id": "a-t1-bash", "name": "bash", "arguments": {"command": "python -m pytest -q"}},
+      {
+        "id": "a-t1-progress",
+        "name": "report_progress",
+        "arguments": {"summary": "Inspected task and confirmed baseline tests run.", "files_touched": ["TASK.md", "tests/test_service.py"]}
+      },
+      {
+        "id": "a-t1-complete",
+        "name": "request_task_completion",
+        "arguments": {
+          "summary": "Baseline inspection completed.",
+          "acceptance_criteria_addressed": ["Baseline files inspected", "Current tests executed"]
+        }
+      }
+    ]
+  },
+  {
+    "tool_calls": [
+      {
+        "id": "a-t2-blocker",
+        "name": "report_blocker",
+        "arguments": {
+          "reason": "Implementation spans validation, storage, CLI, tests, and documentation; split required.",
+          "attempted_actions": ["inspected TASK.md"],
+          "decomposition_recommended": true
+        }
+      }
+    ]
+  },
+  {
+    "tool_calls": [
+      {
+        "id": "a-decompose",
+        "name": "submit_decomposition",
+        "arguments": {
+          "parent_task_id": "T2",
+          "reason": "Split implementation and docs verification.",
+          "children": [
+            {
+              "key": "T2.1",
+              "title": "Implement source and tests",
+              "objective": "Update task service source code and tests.",
+              "acceptance_criteria": ["Source and tests updated", "pytest passes"],
+              "depends_on_child_keys": []
+            },
+            {
+              "key": "T2.2",
+              "title": "Update docs and verify",
+              "objective": "Update README and run the final test suite.",
+              "acceptance_criteria": ["README updated", "Final pytest passes"],
+              "depends_on_child_keys": ["T2.1"]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "tool_calls": [
+      {"id": "a-c1-read-service", "name": "read_file", "arguments": {"path": "task_service/service.py"}},
+      {"id": "a-c1-read-tests", "name": "read_file", "arguments": {"path": "tests/test_service.py"}},
+      {
+        "id": "a-c1-write-model",
+        "name": "write_file",
+        "arguments": {
+          "path": "task_service/model.py",
+          "content": "from __future__ import annotations\n\nfrom dataclasses import dataclass\n\n\n@dataclass\nclass Task:\n    id: str\n    title: str\n    completed: bool = False\n    attempts: int = 0\n\n\ndef validate_task(task: Task) -> None:\n    if not task.id or not task.id.strip():\n        raise ValueError(\"task id is required\")\n    if \"/\" in task.id or \"\\\\\" in task.id:\n        raise ValueError(\"task id must be a simple identifier\")\n    if not task.title or not task.title.strip():\n        raise ValueError(\"task title is required\")\n"
+        }
+      },
+      {
+        "id": "a-c1-write-storage",
+        "name": "write_file",
+        "arguments": {
+          "path": "task_service/storage.py",
+          "content": "from __future__ import annotations\n\nimport json\nfrom pathlib import Path\n\nfrom task_service.model import Task\n\n\ndef load_tasks(path: Path) -> list[Task]:\n    if not path.exists():\n        return []\n    return [Task(**item) for item in json.loads(path.read_text(encoding=\"utf-8\"))]\n\n\ndef save_tasks(path: Path, tasks: list[Task]) -> None:\n    path.parent.mkdir(parents=True, exist_ok=True)\n    path.write_text(json.dumps([task.__dict__ for task in tasks], indent=2), encoding=\"utf-8\")\n"
+        }
+      },
+      {
+        "id": "a-c1-write-service",
+        "name": "write_file",
+        "arguments": {
+          "path": "task_service/service.py",
+          "content": "from __future__ import annotations\n\nfrom task_service.model import Task, validate_task\n\n\nclass TaskService:\n    def __init__(self, tasks: list[Task] | None = None):\n        self.tasks = tasks or []\n\n    def add(self, task: Task) -> None:\n        validate_task(task)\n        if any(existing.id == task.id for existing in self.tasks):\n            raise ValueError(\"duplicate task id\")\n        self.tasks.append(task)\n\n    def get(self, task_id: str) -> Task:\n        for task in self.tasks:\n            if task.id == task_id:\n                return task\n        raise ValueError(f\"unknown task id: {task_id}\")\n\n    def complete(self, task_id: str) -> bool:\n        self.get(task_id).completed = True\n        return True\n\n    def retry(self, task_id: str) -> int:\n        task = self.get(task_id)\n        task.attempts += 1\n        return task.attempts\n"
+        }
+      },
+      {
+        "id": "a-c1-write-cli",
+        "name": "write_file",
+        "arguments": {
+          "path": "task_service/cli.py",
+          "content": "from __future__ import annotations\n\nimport argparse\nfrom pathlib import Path\n\nfrom task_service.model import Task\nfrom task_service.service import TaskService\nfrom task_service.storage import load_tasks, save_tasks\n\n\ndef _require_id(parser: argparse.ArgumentParser, value: str | None) -> str:\n    if not value:\n        parser.error(\"--id is required\")\n    return value\n\n\ndef main() -> None:\n    parser = argparse.ArgumentParser()\n    parser.add_argument(\"command\", choices=[\"add\", \"list\", \"complete\", \"retry\", \"get\"])\n    parser.add_argument(\"--db\", default=\"tasks.json\")\n    parser.add_argument(\"--id\")\n    parser.add_argument(\"--title\")\n    args = parser.parse_args()\n\n    db = Path(args.db)\n    service = TaskService(load_tasks(db))\n    try:\n        if args.command == \"add\":\n            service.add(Task(id=args.id or \"\", title=args.title or \"\"))\n            save_tasks(db, service.tasks)\n        elif args.command == \"complete\":\n            service.complete(_require_id(parser, args.id))\n            save_tasks(db, service.tasks)\n        elif args.command == \"retry\":\n            attempts = service.retry(_require_id(parser, args.id))\n            save_tasks(db, service.tasks)\n            print(attempts)\n        elif args.command == \"get\":\n            task = service.get(_require_id(parser, args.id))\n            print(f\"{task.id}: {task.title} completed={task.completed} attempts={task.attempts}\")\n        else:\n            for task in service.tasks:\n                print(f\"{task.id}: {task.title} completed={task.completed} attempts={task.attempts}\")\n    except ValueError as exc:\n        parser.error(str(exc))\n\n\nif __name__ == \"__main__\":\n    main()\n"
+        }
+      },
+      {
+        "id": "a-c1-write-tests",
+        "name": "write_file",
+        "arguments": {
+          "path": "tests/test_service.py",
+          "content": "from pathlib import Path\n\nimport pytest\nfrom task_service.model import Task\nfrom task_service.service import TaskService\nfrom task_service.storage import load_tasks, save_tasks\n\n\ndef test_add_rejects_duplicate_id():\n    service = TaskService()\n    service.add(Task(id=\"1\", title=\"one\"))\n    with pytest.raises(ValueError, match=\"duplicate task id\"):\n        service.add(Task(id=\"1\", title=\"again\"))\n\n\ndef test_json_persistence_roundtrip(tmp_path: Path):\n    path = tmp_path / \"nested\" / \"tasks.json\"\n    save_tasks(path, [Task(id=\"1\", title=\"one\")])\n    assert load_tasks(path)[0].title == \"one\"\n\n\ndef test_retry_counts_attempts():\n    service = TaskService([Task(id=\"1\", title=\"one\")])\n    assert service.retry(\"1\") == 1\n\n\ndef test_retry_missing_task_has_explicit_error():\n    with pytest.raises(ValueError, match=\"unknown task id: missing\"):\n        TaskService().retry(\"missing\")\n\n\ndef test_validation_rejects_invalid_id_and_empty_title():\n    service = TaskService()\n    with pytest.raises(ValueError, match=\"simple identifier\"):\n        service.add(Task(id=\"../bad\", title=\"bad\"))\n    with pytest.raises(ValueError, match=\"task title is required\"):\n        service.add(Task(id=\"ok\", title=\"\"))\n\n\ndef test_get_returns_task_by_id():\n    task = TaskService([Task(id=\"1\", title=\"one\")]).get(\"1\")\n    assert task.title == \"one\"\n"
+        }
+      },
+      {"id": "a-c1-bash", "name": "bash", "arguments": {"command": "python -m pytest -q"}},
+      {
+        "id": "a-c1-progress",
+        "name": "report_progress",
+        "arguments": {
+          "summary": "Implemented source and tests; pytest passes.",
+          "files_touched": ["task_service/model.py", "task_service/storage.py", "task_service/service.py", "task_service/cli.py", "tests/test_service.py"]
+        }
+      },
+      {
+        "id": "a-c1-complete",
+        "name": "request_task_completion",
+        "arguments": {
+          "summary": "Source and tests implemented.",
+          "acceptance_criteria_addressed": ["Source and tests updated", "pytest passes"]
+        }
+      }
+    ]
+  },
+  {
+    "tool_calls": [
+      {"id": "a-c2-read", "name": "read_file", "arguments": {"path": "README.md"}},
+      {
+        "id": "a-c2-write-readme",
+        "name": "write_file",
+        "arguments": {
+          "path": "README.md",
+          "content": "# Task Service Repo\n\nA small multi-file Python repository for v0.2 planning experiments.\n\nRun tests:\n\n```bash\npython -m pytest -q\n```\n\nImplemented behaviors include stricter task validation, nested JSON persistence, retry errors for missing tasks, and a CLI `get` command for ID lookup.\n"
+        }
+      },
+      {"id": "a-c2-bash", "name": "bash", "arguments": {"command": "python -m pytest -q"}},
+      {
+        "id": "a-c2-progress",
+        "name": "report_progress",
+        "arguments": {"summary": "Updated README and reran pytest.", "files_touched": ["README.md"]}
+      },
+      {
+        "id": "a-c2-complete",
+        "name": "request_task_completion",
+        "arguments": {
+          "summary": "Documentation updated and final tests pass.",
+          "acceptance_criteria_addressed": ["README updated", "Final pytest passes"]
+        }
+      }
+    ]
+  }
+]

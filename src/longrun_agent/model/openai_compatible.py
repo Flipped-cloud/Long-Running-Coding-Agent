@@ -6,6 +6,7 @@ from typing import Any
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from longrun_agent.config import ModelConfig, get_api_key
+from longrun_agent.exceptions import ToolArgumentsProtocolError
 from longrun_agent.model.base import ModelProvider
 from longrun_agent.protocol import FinalAnswer, ModelResponse, ToolCall
 
@@ -73,7 +74,7 @@ class OpenAICompatibleProvider(ModelProvider):
                 try:
                     arguments = json.loads(function.arguments or "{}")
                 except json.JSONDecodeError as exc:
-                    raise ValueError(f"invalid tool call JSON for {function.name}") from exc
+                    raise ToolArgumentsProtocolError(function.name, str(exc), function.arguments or "") from exc
                 calls.append(ToolCall(id=tool_call.id, name=function.name, arguments=arguments))
                 raw_tool_calls.append(
                     {
