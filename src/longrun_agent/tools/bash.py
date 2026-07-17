@@ -90,6 +90,15 @@ def _display_command(arguments: BashArgs) -> str:
     return arguments.command or ""
 
 
+def _verification_kind(command: str) -> str | None:
+    lowered = command.lower()
+    if "pytest" in lowered:
+        return "pytest"
+    if "task_service.cli" in lowered or " validate" in f" {lowered} ":
+        return "acceptance"
+    return None
+
+
 def _resolve_cwd(workspace, requested: str):
     root = ensure_workspace_root(workspace)
     raw = os.fspath(requested)
@@ -118,6 +127,7 @@ class BashTool(BaseTool):
 
     def execute(self, call_id: str, arguments: BashArgs, context: ToolContext) -> ToolResult:
         command = _display_command(arguments)
+        normalized_command = " ".join(command.split())
         try:
             cwd = _resolve_cwd(context.workspace, arguments.cwd)
         except Exception as exc:
@@ -129,7 +139,7 @@ class BashTool(BaseTool):
                 output=str(exc),
                 error_type=ErrorType.TOOL,
                 error_message=str(exc),
-                metadata={"command": command, "cwd": arguments.cwd},
+                metadata={"command": command, "normalized_command": normalized_command, "cwd": arguments.cwd},
             )
         if not cwd.is_dir():
             return ToolResult(
@@ -140,7 +150,7 @@ class BashTool(BaseTool):
                 output=f"cwd is not a directory: {arguments.cwd}",
                 error_type=ErrorType.TOOL,
                 error_message="cwd is not a directory",
-                metadata={"command": command, "cwd": str(cwd)},
+                metadata={"command": command, "normalized_command": normalized_command, "cwd": str(cwd)},
             )
         if arguments.command and not context.config.bash.shell:
             unsupported = _unsupported_shell_syntax(arguments.command)
@@ -157,7 +167,12 @@ class BashTool(BaseTool):
                     ),
                     error_type=ErrorType.PROTOCOL,
                     error_message="unsupported_shell_syntax",
-                    metadata={"command": command, "cwd": str(cwd), "unsupported_shell_syntax": True},
+                    metadata={
+                        "command": command,
+                        "normalized_command": normalized_command,
+                        "cwd": str(cwd),
+                        "unsupported_shell_syntax": True,
+                    },
                 )
         reason = _reject_reason(command)
         if reason:
@@ -169,7 +184,7 @@ class BashTool(BaseTool):
                 output=reason,
                 error_type=ErrorType.TOOL,
                 error_message=reason,
-                metadata={"command": command, "cwd": str(cwd)},
+                metadata={"command": command, "normalized_command": normalized_command, "cwd": str(cwd)},
             )
         timeout = min(arguments.timeout or context.config.bash.timeout_seconds, context.config.bash.timeout_seconds)
         started = time.monotonic()
@@ -216,15 +231,20 @@ class BashTool(BaseTool):
                 output=f"{stdout_output}\n{stderr_output}",
                 metadata={
                     "command": command,
+                    "normalized_command": normalized_command,
                     "argv": arguments.argv,
                     "cwd": str(cwd),
                     "exit_code": exit_code,
+                    "code_epoch": int(getattr(context, "code_epoch", 0)),
+                    "verification_kind": _verification_kind(command),
                     "duration_seconds": duration,
                     "timed_out": timed_out,
                     "stdout_chars": len(stdout),
                     "stderr_chars": len(stderr),
                     "truncated": truncated,
                     "output_artifact": str(artifact),
+                    "stdout_artifact": str(artifact),
+                    "combined_artifact": str(artifact),
                     "platform": sys.platform,
                 },
                 artifact_path=str(artifact),
@@ -240,5 +260,5 @@ class BashTool(BaseTool):
                 output=str(exc),
                 error_type=ErrorType.TOOL,
                 error_message=str(exc),
-                metadata={"command": command, "argv": arguments.argv, "cwd": str(cwd)},
+                metadata={"command": command, "normalized_command": normalized_command, "argv": arguments.argv, "cwd": str(cwd)},
             )

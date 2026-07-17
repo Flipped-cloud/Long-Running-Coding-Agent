@@ -1,72 +1,45 @@
 from __future__ import annotations
 
 from longrun_agent.config import AppConfig
+from longrun_agent.context.assembler import render_current_instruction, render_task_anchor
+from longrun_agent.context.schema import TaskContextSeed
 from longrun_agent.state.schema import ProjectState, TaskNode
 
 
-def build_task_session_prompt(state: ProjectState, task: TaskNode, config: AppConfig | None = None) -> str:
+def build_task_context_seed(state: ProjectState, task: TaskNode) -> TaskContextSeed:
     dependency_summaries = []
     for dependency_id in task.dependencies:
         dependency = state.task_by_id(dependency_id)
         dependency_summaries.append(f"- {dependency.id}: {dependency.completion_summary or dependency.status.value}")
-    max_sessions = config.planning.execution.max_sessions_per_task if config else "unknown"
-    max_steps = config.agent.max_steps if config else "unknown"
-    max_session_seconds = config.agent.max_session_seconds if config else "unknown"
-    no_progress_limit = config.planning.execution.max_no_progress_sessions if config else 1
-    no_progress_warning = (
-        task.consecutive_no_progress_sessions >= no_progress_limit
-        if isinstance(no_progress_limit, int) and no_progress_limit > 0
-        else False
+    recent_notes = []
+    for index, note in enumerate(task.progress_notes[-5:], start=max(1, len(task.progress_notes) - 4)):
+        recent_notes.append(f"- note {index}: {_short_note(note)}")
+    return TaskContextSeed(
+        project_id=state.project_id,
+        project_objective=state.objective,
+        plan_version=state.plan_version,
+        task_id=task.id,
+        task_title=task.title,
+        task_objective=task.objective,
+        task_status=task.status.value,
+        acceptance_criteria=task.acceptance_criteria,
+        dependency_summaries=dependency_summaries,
+        blocker=task.blocker,
+        attempts=task.attempts,
+        progress_summary="\n".join(recent_notes) if recent_notes else None,
+        files_touched=task.files_touched[-10:],
+        latest_handoff_id=task.latest_context_handoff_id,
     )
-    return "\n".join(
-        [
-            f"Project objective: {state.objective}",
-            f"Current task ID: {task.id}",
-            f"Current objective: {task.objective}",
-            f"Task objective: {task.objective}",
-            "High-priority handoff / next action:",
-            task.last_handoff_summary or "- none",
-            "Acceptance criteria:",
-            *[f"- {criterion}" for criterion in task.acceptance_criteria],
-            "Completed dependency summary:",
-            *(dependency_summaries or ["- none"]),
-            "Existing progress notes:",
-            *([f"- {note}" for note in task.progress_notes] or ["- none"]),
-            "Previous handoff summary:",
-            task.last_handoff_summary or "- none",
-            "Previously read files:",
-            *([f"- {path}" for path in task.read_files] or ["- none"]),
-            "Previously changed files:",
-            *([f"- {path}" for path in task.files_touched] or ["- none"]),
-            f"Blocker: {task.blocker or 'none'}",
-            f"Attempts: {task.attempts} / {max_sessions}",
-            f"Remaining sessions for this task: {max(0, int(max_sessions) - task.attempts) if isinstance(max_sessions, int) else 'unknown'}",
-            f"Session budget: max_steps={max_steps}, max_session_seconds={max_session_seconds}",
-            f"Consecutive no-progress sessions: {task.consecutive_no_progress_sessions}",
-            (
-                "No-progress warning: do not repeat reads of unchanged files; this session must modify files, "
-                "run tests, or report a blocker."
-                if no_progress_warning
-                else "No-progress warning: none"
-            ),
-            "Control tools: report_progress, report_blocker, request_task_completion, request_decomposition.",
-            "Bash tool protocol:",
-            '- Prefer argv, for example {"argv": ["python", "-m", "pytest", "-q"], "cwd": "."}.',
-            "- Commands already run inside the workspace.",
-            "- Do not use cd, &&, ||, pipes, redirection, semicolons, or shell built-ins.",
-            "- Do not use absolute-path rm commands.",
-            '- For CLI checks use argv, for example {"argv": ["python", "-m", "task_service.cli", "get", "--db", "tasks.json", "--id", "1"], "cwd": "."}.',
-            "Execution rhythm:",
-            "- Only read files named directly in the objective or acceptance criteria.",
-            "- Complete necessary inspection within the first 3 successful tool calls.",
-            "- Starting with the 4th successful tool call, modify files, run a test, report_blocker, or request_task_completion.",
-            "- Last 2 model turns must be used for verification and a terminal control signal.",
-            "- When complete, call request_task_completion.",
-            "- When unable to complete, call report_blocker.",
-            "Forbidden:",
-            "- Do not consecutively read the same unchanged file.",
-            "- Do not keep exploring after tests pass.",
-            "- Do not use plain FinalAnswer instead of request_task_completion/report_blocker/request_decomposition.",
-            "- Do not invent test results.",
-        ]
-    )
+
+
+def build_task_session_prompt(state: ProjectState, task: TaskNode, config: AppConfig | None = None) -> str:
+    seed = build_task_context_seed(state, task)
+    repeat = config.context.repeat_task_anchor_at_end if config else True
+    return "\n\n".join([render_task_anchor(seed), render_current_instruction(seed, repeat_anchor=repeat)])
+
+
+def _short_note(note: str) -> str:
+    normalized = " ".join(note.split())
+    if len(normalized) <= 240:
+        return normalized
+    return normalized[:200] + "... [truncated; full note available in project events]"

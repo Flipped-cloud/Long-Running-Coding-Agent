@@ -45,6 +45,7 @@ class WriteFileTool(BaseTool):
             created = not path.exists()
             after = arguments.content
             rel = relative_to_workspace(context.workspace, path)
+            code_epoch = int(getattr(context, "code_epoch", 0))
             if before == after and not created:
                 return ToolResult(
                     tool_call_id=call_id,
@@ -59,6 +60,8 @@ class WriteFileTool(BaseTool):
                         "after_sha256": sha256_text(after),
                         "before_hash": sha256_text(before),
                         "after_hash": sha256_text(after),
+                        "current_sha256": sha256_text(after),
+                        "code_epoch": code_epoch,
                         "size_before": len(before.encode("utf-8")),
                         "size_after": len(after.encode("utf-8")),
                         "before_line_count": len(before.splitlines()) if before else 0,
@@ -93,6 +96,8 @@ class WriteFileTool(BaseTool):
             else:
                 diff_output = diff
             status = "created" if created else "updated"
+            code_epoch += 1
+            context.code_epoch = code_epoch
             return ToolResult(
                 tool_call_id=call_id,
                 tool_name=self.name,
@@ -106,6 +111,8 @@ class WriteFileTool(BaseTool):
                     "after_sha256": sha256_text(after),
                     "before_hash": None if created else sha256_text(before),
                     "after_hash": sha256_text(after),
+                    "current_sha256": sha256_text(after),
+                    "code_epoch": code_epoch,
                     "size_before": len(before.encode("utf-8")),
                     "size_after": len(after.encode("utf-8")),
                     "before_line_count": len(before.splitlines()) if before else 0,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 from pydantic import BaseModel, Field, model_validator
 
 from longrun_agent.exceptions import WorkspaceSecurityError
@@ -45,6 +47,8 @@ class ReadFileTool(BaseTool):
                 )
 
             text = path.read_text(encoding="utf-8")
+            raw_bytes = path.read_bytes()
+            stat = path.stat()
             lines = text.splitlines()
             total = len(lines)
             requested_end = arguments.end_line or (arguments.start_line + context.config.read_file.max_lines - 1)
@@ -77,6 +81,9 @@ class ReadFileTool(BaseTool):
                     "encoding": "utf-8",
                     "has_previous": start > 1,
                     "has_next": end < total,
+                    "content_sha256": hashlib.sha256(raw_bytes).hexdigest(),
+                    "size_bytes": len(raw_bytes),
+                    "modified_time_ns": stat.st_mtime_ns,
                 },
             )
         except (FileNotFoundError, WorkspaceSecurityError, UnicodeDecodeError, IsADirectoryError) as exc:

@@ -13,9 +13,11 @@ class FakeModelProvider(ModelProvider):
     def __init__(self, responses: list[ModelResponse]):
         self._responses = deque(responses)
         self.calls = 0
+        self.tool_choices: list[dict | str | None] = []
 
-    def generate(self, messages: list[dict], tools: list[dict]) -> ModelResponse:
+    def generate(self, messages: list[dict], tools: list[dict], tool_choice: dict | str | None = None) -> ModelResponse:
         self.calls += 1
+        self.tool_choices.append(tool_choice)
         if not self._responses:
             raise ProviderError("FakeModelProvider scripted responses exhausted")
         return self._responses.popleft()

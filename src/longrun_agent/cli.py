@@ -18,7 +18,11 @@ from longrun_agent.state.store import ProjectStateStore
 
 app = typer.Typer(add_completion=False)
 project_app = typer.Typer(add_completion=False)
+context_app = typer.Typer(add_completion=False)
+eval_app = typer.Typer(add_completion=False)
 app.add_typer(project_app, name="project")
+app.add_typer(context_app, name="context")
+app.add_typer(eval_app, name="eval")
 console = Console()
 
 
@@ -189,6 +193,78 @@ def project_metrics(
         state = store.load(project_id)
         store.write_metrics(project_id, project_statistics(state, store.read_sessions(project_id)))
     console.print_json(path.read_text(encoding="utf-8"))
+
+
+@context_app.command("inspect")
+def context_inspect(
+    config: Path = typer.Option(Path("configs/planning_static.yaml"), exists=True, file_okay=True, dir_okay=False),
+    project_id: str = typer.Option(...),
+    session_id: str | None = typer.Option(None),
+) -> None:
+    store, app_config = _store(config)
+    sessions = store.read_sessions(project_id)
+    if session_id:
+        sessions = [session for session in sessions if session.get("session_id") == session_id]
+    segments = store.read_context_segments(project_id)
+    events = store.read_context_events(project_id)
+    latest = sessions[-1] if sessions else {}
+    payload = {
+        "context_mode": app_config.context.mode,
+        "segment_count": len(segments) or int(latest.get("context_segment_count") or 0),
+        "current_segment": latest.get("context_segment_count"),
+        "estimated_token_usage": latest.get("max_estimated_input_tokens"),
+        "actual_max_input_token": latest.get("max_actual_input_tokens"),
+        "reset_count": latest.get("context_reset_count", 0),
+        "prune_count": latest.get("deterministic_prune_count", 0),
+        "latest_handoff": latest.get("latest_context_handoff_id"),
+        "stale_item_count": latest.get("stale_item_count", 0),
+        "artifact_paths": {
+            "segments": str(store.context_segments_path(project_id)),
+            "events": str(store.context_events_path(project_id)),
+            "handoffs": str(store.handoffs_dir(project_id)),
+        },
+        "context_event_count": len(events),
+    }
+    console.print_json(json.dumps(payload))
+
+
+@context_app.command("handoff")
+def context_handoff(
+    config: Path = typer.Option(Path("configs/planning_static.yaml"), exists=True, file_okay=True, dir_okay=False),
+    project_id: str = typer.Option(...),
+    handoff_id: str = typer.Option(...),
+) -> None:
+    store, _app_config = _store(config)
+    record = store.load_handoff(project_id, handoff_id)
+    console.print_json(record.model_dump_json())
+
+
+@eval_app.command("context")
+def eval_context(
+    config: Path = typer.Option(Path("evals/context_lifecycle/config.yaml"), exists=True, file_okay=True, dir_okay=False),
+    probe: str = typer.Option("position"),
+    lengths: str = typer.Option("2048,4096,8192"),
+    samples: int = typer.Option(20, min=1),
+    seed: int | None = typer.Option(None),
+    modes: str | None = typer.Option(None),
+    output_dir: Path | None = typer.Option(None, file_okay=False, dir_okay=True),
+    dry_run: bool = typer.Option(False),
+    fake_provider_script: Path | None = typer.Option(None, exists=True, file_okay=True, dir_okay=False),
+) -> None:
+    from longrun_agent.context_probes.runner import run_probe
+
+    result = run_probe(
+        config_path=config,
+        probe=probe,
+        lengths=[int(item) for item in lengths.split(",") if item],
+        samples=samples,
+        seed=seed,
+        modes=[item for item in modes.split(",") if item] if modes else None,
+        output_dir=output_dir,
+        dry_run=dry_run,
+        fake_provider_script=fake_provider_script,
+    )
+    console.print_json(json.dumps(result))
 
 
 if __name__ == "__main__":

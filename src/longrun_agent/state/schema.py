@@ -56,6 +56,9 @@ class TaskNode(BaseModel):
     files_touched: list[str] = Field(default_factory=list)
     consecutive_no_progress_sessions: int = Field(default=0, ge=0)
     last_handoff_summary: str | None = None
+    latest_context_handoff_id: str | None = None
+    context_reset_count: int = Field(default=0, ge=0)
+    context_compaction_count: int = Field(default=0, ge=0)
     blocker: str | None = None
     completion_summary: str | None = None
     completion_candidate: CompletionCandidate | None = None

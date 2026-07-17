@@ -10,8 +10,8 @@ from longrun_agent.model.openai_compatible import OpenAICompatibleProvider, _is_
 
 
 class StatusError(Exception):
-    def __init__(self, status_code: int):
-        super().__init__(f"status {status_code}")
+    def __init__(self, status_code: int, message: str | None = None):
+        super().__init__(message or f"status {status_code}")
         self.status_code = status_code
 
 
@@ -44,6 +44,12 @@ def config(max_api_retries: int = 3) -> ModelConfig:
         request_timeout_seconds=1,
         max_api_retries=max_api_retries,
     )
+
+
+def deepseek_config(max_api_retries: int = 3) -> ModelConfig:
+    cfg = config(max_api_retries=max_api_retries)
+    cfg.model_name = "deepseek-v4-flash"
+    return cfg
 
 
 def response_with_message(message, *, usage=None, response_id="resp-1"):
@@ -159,6 +165,32 @@ def test_generate_retries_429_then_succeeds(monkeypatch):
     result = OpenAICompatibleProvider(config(max_api_retries=2), client=client).generate([], [])
     assert result.final_answer.content == "done"
     assert len(client.completions.calls) == 2
+
+
+def test_generate_falls_back_to_auto_when_named_tool_choice_is_unsupported(monkeypatch):
+    monkeypatch.setattr(provider_module, "wait_exponential", lambda *args, **kwargs: wait_none())
+    unsupported = StatusError(400, "InvalidParameter: The tool_choice parameter does not support being set to object")
+    client = FakeClient([unsupported, response_with_message(text_message("done"))])
+    provider = OpenAICompatibleProvider(config(max_api_retries=1), client=client)
+    named = {"type": "function", "function": {"name": "read_file"}}
+
+    result = provider.generate([], [{"type": "function", "function": {"name": "read_file"}}], tool_choice=named)
+
+    assert result.final_answer.content == "done"
+    assert [call["tool_choice"] for call in client.completions.calls] == [named, "auto"]
+
+
+def test_generate_disables_deepseek_v4_thinking_for_named_tool_choice(monkeypatch):
+    monkeypatch.setattr(provider_module, "wait_exponential", lambda *args, **kwargs: wait_none())
+    client = FakeClient([response_with_message(text_message("done"))])
+    provider = OpenAICompatibleProvider(deepseek_config(max_api_retries=1), client=client)
+    named = {"type": "function", "function": {"name": "read_file"}}
+
+    result = provider.generate([], [{"type": "function", "function": {"name": "read_file"}}], tool_choice=named)
+
+    assert result.final_answer.content == "done"
+    assert client.completions.calls[0]["tool_choice"] == named
+    assert client.completions.calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
 def test_generate_retries_500_then_succeeds(monkeypatch):

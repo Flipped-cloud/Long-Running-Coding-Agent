@@ -18,6 +18,21 @@ def _is_retryable(exc: BaseException) -> bool:
     return True
 
 
+def _is_tool_choice_unsupported(exc: BaseException) -> bool:
+    message = str(exc)
+    return (
+        getattr(exc, "status_code", None) == 400
+        and "tool_choice" in message
+        and ("does not support" in message or "InvalidParameter" in message)
+    )
+
+
+def _deepseek_v4_extra_body(model_name: str, tool_choice: dict[str, Any] | str) -> dict[str, Any] | None:
+    if isinstance(tool_choice, dict) and "deepseek-v4" in model_name.lower():
+        return {"thinking": {"type": "disabled"}}
+    return None
+
+
 class OpenAICompatibleProvider(ModelProvider):
     """OpenAI SDK based provider for OpenAI-compatible chat completions."""
 
@@ -34,24 +49,40 @@ class OpenAICompatibleProvider(ModelProvider):
                 kwargs["base_url"] = config.base_url
             self.client = OpenAI(**kwargs)
 
-    def generate(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> ModelResponse:
+    def generate(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        tool_choice: dict[str, Any] | str | None = None,
+    ) -> ModelResponse:
         @retry(
             retry=retry_if_exception(_is_retryable),
             wait=wait_exponential(multiplier=1, min=1, max=8),
             stop=stop_after_attempt(self.config.max_api_retries),
             reraise=True,
         )
-        def call_api():
-            return self.client.chat.completions.create(
-                model=self.config.model_name,
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
-                temperature=self.config.temperature,
-                max_tokens=self.config.max_output_tokens,
-            )
+        def call_api(resolved_tool_choice: dict[str, Any] | str):
+            kwargs = {
+                "model": self.config.model_name,
+                "messages": messages,
+                "tools": tools,
+                "tool_choice": resolved_tool_choice,
+                "temperature": self.config.temperature,
+                "max_tokens": self.config.max_output_tokens,
+            }
+            extra_body = _deepseek_v4_extra_body(self.config.model_name, resolved_tool_choice)
+            if extra_body is not None:
+                kwargs["extra_body"] = extra_body
+            return self.client.chat.completions.create(**kwargs)
 
-        return self._convert_response(call_api())
+        resolved_tool_choice = tool_choice or "auto"
+        try:
+            response = call_api(resolved_tool_choice)
+        except Exception as exc:
+            if tool_choice is None or not _is_tool_choice_unsupported(exc):
+                raise
+            response = call_api("auto")
+        return self._convert_response(response)
 
     @staticmethod
     def _convert_response(response: Any) -> ModelResponse:

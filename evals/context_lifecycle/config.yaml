@@ -1,0 +1,27 @@
+seed: 42
+samples: 20
+lengths: [2048, 4096, 8192, 12288]
+positions: [beginning, middle, end]
+position_ratios: [0.1, 0.25, 0.5, 0.75, 0.9]
+modes:
+  - full_history
+  - recent_window
+  - deterministic_prune
+  - structured_reset
+mode_configs:
+  full_history: ../../configs/context_full_history.yaml
+  recent_window: ../../configs/context_recent_window.yaml
+  deterministic_prune: ../../configs/context_deterministic_prune.yaml
+  structured_reset: ../../configs/context_structured_reset.yaml
+generation:
+  target_context_limit: 16384
+  token_length_tolerance: 0.08
+  filler_turn_tokens_min: 128
+  filler_turn_tokens_max: 256
+constraints_per_case: [3, 4, 5]
+token_length_tolerance: 0.08
+max_answer_protocol_retries: 2
+output_root: ../../.runs/context_evals
+save_prompts: true
+save_predictions: true
+structured_reset_compactor: deterministic

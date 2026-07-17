@@ -10,6 +10,9 @@ from typing import Any
 
 from longrun_agent.agent.prompt import SYSTEM_PROMPT
 from longrun_agent.config import AppConfig
+from longrun_agent.context.buffer import ContextBuffer
+from longrun_agent.context.lifecycle import ContextLifecycleManager
+from longrun_agent.context.schema import ContextPreparationAction, TaskContextSeed
 from longrun_agent.exceptions import ToolArgumentsProtocolError
 from longrun_agent.model.base import ModelProvider
 from longrun_agent.protocol import ErrorType, ModelResponse, RunResult, RunStatus
@@ -24,6 +27,14 @@ from longrun_agent.tools.write_file import WriteFileTool
 
 def default_router() -> ToolRouter:
     return ToolRouter([ReadFileTool(), WriteFileTool(), BashTool()])
+
+
+def _split_usage(usage: dict[str, int]) -> tuple[int, int]:
+    input_tokens = int(usage.get("input_tokens", 0))
+    output_tokens = int(usage.get("output_tokens", 0))
+    if input_tokens == 0 and output_tokens == 0 and usage.get("total_tokens"):
+        input_tokens = int(usage["total_tokens"])
+    return input_tokens, output_tokens
 
 
 class AgentLoop:
@@ -55,6 +66,11 @@ class AgentLoop:
         stop_condition: Callable[[], bool] | None = None,
         require_external_terminal: bool = False,
         completion_evidence: Callable[[], bool] | None = None,
+        context_seed: TaskContextSeed | None = None,
+        context_manager: ContextLifecycleManager | None = None,
+        project_id: str | None = None,
+        task_id: str | None = None,
+        session_id: str | None = None,
     ) -> RunResult:
         workspace_path = ensure_workspace_root(workspace or self.config.workspace.root)
         run_dir = self.config.telemetry.run_root / self.run_id
@@ -65,12 +81,26 @@ class AgentLoop:
             diffs_dir=logger.diffs_dir,
             config=self.config.tools,
         )
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": task},
-        ]
+        if context_manager is None:
+            context_manager = ContextLifecycleManager(
+                self.config.context,
+                seed=context_seed,
+                model=self.model,
+                project_id=project_id,
+                task_id=task_id,
+                session_id=session_id,
+                run_id=self.run_id,
+                workspace_root=workspace_path,
+                event_sink=self._emit,
+            )
+        context_buffer = ContextBuffer(
+            system_message={"role": "system", "content": SYSTEM_PROMPT},
+            task_anchor_message=context_manager.initial_task_message(task),
+        )
         started_at = datetime.now(UTC).isoformat()
         total_tokens = 0
+        input_tokens_total = 0
+        output_tokens_total = 0
         tool_count = 0
         consecutive_errors = 0
         final_answer: str | None = None
@@ -102,40 +132,35 @@ class AgentLoop:
             remaining = self.config.agent.max_steps - step + 1
             terminal_tools_only = False
             if require_external_terminal and remaining == 3:
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "Three model turns remain. Stop exploration, complete verification, "
-                            "and reserve the final turn for a terminal control tool."
-                        ),
-                    }
+                context_buffer.add_user_reminder(
+                    "Three model turns remain. Stop exploration, complete verification, and reserve the final turn for a terminal control tool."
                 )
             if require_external_terminal and remaining == 1:
                 terminal_tools_only = True
                 if completion_evidence is not None and completion_evidence():
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "Final model turn: implementation and verification evidence already exists. "
-                                "Only call request_task_completion if the acceptance criteria are satisfied, "
-                                "otherwise call report_blocker with the exact remaining issue. Do not run more tools."
-                            ),
-                        }
+                    context_buffer.add_user_reminder(
+                        "Final model turn: implementation and verification evidence already exists. Only call request_task_completion if the acceptance criteria are satisfied, otherwise call report_blocker with the exact remaining issue. Do not run more tools."
                     )
                 else:
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "Final model turn: no completion evidence is recorded. "
-                                "Call report_blocker with the exact remaining issue, or request_task_completion only if "
-                                "you can cite satisfied acceptance criteria from existing observations."
-                            ),
-                        }
+                    context_buffer.add_user_reminder(
+                        "Final model turn: no completion evidence is recorded. Call report_blocker with the exact remaining issue, or request_task_completion only if you can cite satisfied acceptance criteria from existing observations."
                     )
             tools_for_request = self._schemas(terminal_tools_only=terminal_tools_only)
+            preparation = context_manager.prepare(context_buffer, tools_for_request, step=step)
+            logger.log(step, "context_budget_measured", action_type="context", payload=preparation.budget_before.model_dump(mode="json"))
+            if preparation.action == ContextPreparationAction.BUDGET_EXHAUSTED:
+                status = RunStatus.CONTEXT_BUDGET_EXHAUSTED
+                logger.log(
+                    step,
+                    "context_budget_exhausted",
+                    action_type="context",
+                    success=False,
+                    error_type=ErrorType.ENVIRONMENT.value,
+                    error_message=preparation.hard_stop_reason,
+                    payload=preparation.budget_after.model_dump(mode="json"),
+                )
+                break
+            messages = preparation.messages
             logger.log(
                 step,
                 "model_request",
@@ -146,10 +171,12 @@ class AgentLoop:
                 logger.save_prompt(step, {"messages": messages, "tools": tools_for_request})
             self._emit("model_request", {"step": step})
             response, retry_count, protocol_failed = self._generate_with_protocol_retries(
-                messages=messages,
+                context_buffer=context_buffer,
                 tools=tools_for_request,
                 logger=logger,
                 step=step,
+                initial_messages=messages,
+                context_manager=context_manager,
             )
             tool_argument_protocol_retry_count += retry_count
             if protocol_failed:
@@ -161,7 +188,16 @@ class AgentLoop:
                 consecutive_errors += 1
                 break
 
-            total_tokens += int(response.usage.get("total_tokens", 0))
+            usage_input, usage_output = _split_usage(response.usage)
+            total_tokens += int(response.usage.get("total_tokens", usage_input + usage_output))
+            input_tokens_total += usage_input
+            output_tokens_total += usage_output
+            context_manager.record_actual_usage(
+                step=step,
+                estimated_input_tokens=preparation.budget_after.estimated_message_tokens
+                + preparation.budget_after.estimated_tool_schema_tokens,
+                actual_input_tokens=response.usage.get("input_tokens"),
+            )
             logger.log(
                 step,
                 "model_response",
@@ -175,7 +211,7 @@ class AgentLoop:
             if response.final_answer is not None and not response.tool_calls:
                 final_answer = response.final_answer.content
                 logger.log(step, "final_answer", action_type="final_answer", success=True, summary=final_answer)
-                messages.append(response.raw_metadata.get("message", {"role": "assistant", "content": final_answer}))
+                context_buffer.add_assistant_final(response.raw_metadata.get("message", {"role": "assistant", "content": final_answer}))
                 if require_external_terminal and (stop_condition is None or not stop_condition()):
                     seen_final_without_signal = True
                     logger.log(
@@ -186,14 +222,8 @@ class AgentLoop:
                         error_type=ErrorType.PROTOCOL.value,
                         error_message="Project Session requires request_task_completion, report_blocker, or request_decomposition",
                     )
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "FinalAnswer does not change Project Task state. Call exactly one terminal control tool: "
-                                "request_task_completion, report_blocker, or request_decomposition."
-                            ),
-                        }
+                    context_buffer.add_protocol_correction(
+                        "FinalAnswer does not change Project Task state. Call exactly one terminal control tool: request_task_completion, report_blocker, or request_decomposition."
                     )
                     continue
                 status = RunStatus.COMPLETED
@@ -212,10 +242,10 @@ class AgentLoop:
                 if consecutive_errors >= self.config.agent.max_consecutive_errors:
                     status = RunStatus.ABORTED
                     break
-                messages.append({"role": "user", "content": "Return valid tool calls or a final answer."})
+                context_buffer.add_protocol_correction("Return valid tool calls or a final answer.")
                 continue
 
-            messages.append(self._assistant_tool_message(response))
+            context_buffer.add_assistant_tool_turn(self._assistant_tool_message(response), step=step)
             for call in response.tool_calls:
                 tool_count += 1
                 logger.log(
@@ -251,17 +281,13 @@ class AgentLoop:
                     "tool_finished",
                     {"step": step, "tool": call.name, "success": result.success, "summary": result.summary, "metadata": result.metadata},
                 )
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call.id,
-                        "name": call.name,
-                        "content": result.model_dump_json(),
-                    }
+                context_buffer.add_tool_result(
+                    {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": result.model_dump_json()}
                 )
+            context_buffer.finalize_turn()
             action_required = getattr(self.router, "action_required_message", None)
             if action_required:
-                messages.append({"role": "user", "content": action_required})
+                context_buffer.add_user_reminder(action_required)
                 clear_action_required = getattr(self.router, "clear_action_required", None)
                 if clear_action_required:
                     clear_action_required()
@@ -289,29 +315,23 @@ class AgentLoop:
             for grace_index in range(1, self.config.agent.terminal_grace_turns + 1):
                 terminal_grace_turn_count += 1
                 grace_step = self.config.agent.max_steps + grace_index
-                logger.log(
-                    grace_step,
-                    "terminal_grace_turn_started",
-                    action_type="model",
-                    payload={"grace_index": grace_index},
-                )
+                logger.log(grace_step, "terminal_grace_turn_started", action_type="model", payload={"grace_index": grace_index})
                 self._emit("terminal_grace_turn_started", {"step": grace_step, "grace_index": grace_index})
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "Verification evidence is complete. A completion candidate has been generated. "
-                            "Confirm completion by calling request_task_completion. Otherwise call report_blocker "
-                            "with the exact remaining issue. Do not perform more exploration."
-                        ),
-                    }
+                context_buffer.add_user_reminder(
+                    "Verification evidence is complete. A completion candidate has been generated. Confirm completion by calling request_task_completion. Otherwise call report_blocker with the exact remaining issue. Do not perform more exploration."
                 )
                 tools_for_request = self._schemas(terminal_tools_only=True)
+                preparation = context_manager.prepare(context_buffer, tools_for_request, step=grace_step)
+                if preparation.action == ContextPreparationAction.BUDGET_EXHAUSTED:
+                    status = RunStatus.CONTEXT_BUDGET_EXHAUSTED
+                    break
                 response, retry_count, protocol_failed = self._generate_with_protocol_retries(
-                    messages=messages,
+                    context_buffer=context_buffer,
                     tools=tools_for_request,
                     logger=logger,
                     step=grace_step,
+                    initial_messages=preparation.messages,
+                    context_manager=context_manager,
                 )
                 tool_argument_protocol_retry_count += retry_count
                 if protocol_failed:
@@ -320,7 +340,10 @@ class AgentLoop:
                 if response is None:
                     status = RunStatus.PROVIDER_ERROR
                     break
-                total_tokens += int(response.usage.get("total_tokens", 0))
+                usage_input, usage_output = _split_usage(response.usage)
+                total_tokens += int(response.usage.get("total_tokens", usage_input + usage_output))
+                input_tokens_total += usage_input
+                output_tokens_total += usage_output
                 logger.log(
                     grace_step,
                     "model_response",
@@ -331,7 +354,7 @@ class AgentLoop:
                 )
                 self._emit("model_response", {"step": grace_step, "kind": response.kind, "usage": response.usage})
                 if response.tool_calls:
-                    messages.append(self._assistant_tool_message(response))
+                    context_buffer.add_assistant_tool_turn(self._assistant_tool_message(response), step=grace_step)
                     for call in response.tool_calls:
                         tool_count += 1
                         logger.log(
@@ -358,23 +381,15 @@ class AgentLoop:
                             error_message=result.error_message,
                             payload={"metadata": result.metadata, "terminal_grace_turn": True},
                         )
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": call.id,
-                                "name": call.name,
-                                "content": result.model_dump_json(),
-                            }
+                        context_buffer.add_tool_result(
+                            {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": result.model_dump_json()}
                         )
+                    context_buffer.finalize_turn()
                 if stop_condition is not None and stop_condition():
                     status = RunStatus.COMPLETED
                     terminal_signal_recovered = True
                     logger.log(
-                        grace_step,
-                        "terminal_signal_recovered",
-                        action_type="run",
-                        success=True,
-                        payload={"grace_index": grace_index},
+                        grace_step, "terminal_signal_recovered", action_type="run", success=True, payload={"grace_index": grace_index}
                     )
                     break
                 status = RunStatus.TERMINAL_SIGNAL_MISSING
@@ -397,6 +412,13 @@ class AgentLoop:
             status = RunStatus.TERMINAL_SIGNAL_MISSING
 
         finished_at = datetime.now(UTC).isoformat()
+        context_metrics = context_manager.metrics(context_buffer)
+        total_tokens = (
+            input_tokens_total
+            + output_tokens_total
+            + int(context_metrics["compactor_input_tokens"])
+            + int(context_metrics["compactor_output_tokens"])
+        )
         result = RunResult(
             run_id=self.run_id,
             status=status,
@@ -409,9 +431,12 @@ class AgentLoop:
             run_json_path=str(logger.run_json_path),
             tool_call_count=tool_count,
             total_tokens=total_tokens,
+            input_tokens_total=input_tokens_total,
+            output_tokens_total=output_tokens_total,
             terminal_grace_turn_count=terminal_grace_turn_count,
             terminal_signal_recovered=terminal_signal_recovered,
             tool_argument_protocol_retry_count=tool_argument_protocol_retry_count,
+            **context_metrics,
         )
         logger.log(
             result.steps,
@@ -421,29 +446,36 @@ class AgentLoop:
             summary=status.value,
             payload=result.model_dump(mode="json"),
         )
-        logger.save_run(result, {"tool_call_count": tool_count, "total_tokens": total_tokens})
+        logger.save_run(result, {"tool_call_count": tool_count, "total_tokens": total_tokens, **context_metrics})
         self._emit("run_finished", result.model_dump(mode="json"))
         return result
 
     def _generate_with_protocol_retries(
         self,
         *,
-        messages: list[dict[str, Any]],
+        context_buffer: ContextBuffer,
         tools: list[dict[str, Any]],
         logger: EventLogger,
         step: int,
+        initial_messages: list[dict[str, Any]] | None = None,
+        context_manager: ContextLifecycleManager | None = None,
     ) -> tuple[ModelResponse | None, int, bool]:
         retries = 0
+        messages = initial_messages
         while True:
+            if messages is None:
+                if context_manager is not None:
+                    preparation = context_manager.prepare(context_buffer, tools, step=step)
+                    if preparation.action == ContextPreparationAction.BUDGET_EXHAUSTED:
+                        return None, retries, False
+                    messages = preparation.messages
+                else:
+                    messages = context_buffer.export_messages()
             try:
                 response = self.model.generate(messages, tools)
                 if retries:
                     logger.log(
-                        step,
-                        "tool_arguments_protocol_recovered",
-                        action_type="model",
-                        success=True,
-                        payload={"retry_count": retries},
+                        step, "tool_arguments_protocol_recovered", action_type="model", success=True, payload={"retry_count": retries}
                     )
                     self._emit("tool_arguments_protocol_recovered", {"step": step, "retry_count": retries})
                 return response, retries, False
@@ -461,8 +493,8 @@ class AgentLoop:
                 if retries >= self.config.agent.protocol_retries_per_step:
                     return None, retries, True
                 retries += 1
-                retry_message = self._tool_arguments_retry_message(exc)
-                messages.append({"role": "user", "content": retry_message})
+                context_buffer.add_protocol_correction(self._tool_arguments_retry_message(exc))
+                messages = None
                 record_protocol_retry = getattr(self.router, "record_protocol_retry", None)
                 if record_protocol_retry:
                     record_protocol_retry()
@@ -478,12 +510,7 @@ class AgentLoop:
                 self._emit("tool_arguments_protocol_retry", {"step": step, "tool_name": exc.tool_name, "retry": retries})
             except Exception as exc:
                 logger.log(
-                    step,
-                    "provider_error",
-                    action_type="model",
-                    success=False,
-                    error_type=ErrorType.PROVIDER.value,
-                    error_message=str(exc),
+                    step, "provider_error", action_type="model", success=False, error_type=ErrorType.PROVIDER.value, error_message=str(exc)
                 )
                 return None, retries, False
 

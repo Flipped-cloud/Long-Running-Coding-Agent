@@ -82,6 +82,63 @@ class BashConfig(BaseModel):
     shell: bool = False
 
 
+class ContextTokenCounterConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["approximate", "tiktoken"] = "approximate"
+    encoding: str = "cl100k_base"
+    chars_per_token: float = Field(default=4.0, gt=0)
+    per_message_overhead: int = Field(default=4, ge=0)
+    per_tool_overhead: int = Field(default=32, ge=0)
+
+
+class ContextPruningConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    clear_stale_reads: bool = True
+    supersede_repeated_bash: bool = True
+    invalidate_tests_after_write: bool = True
+    deduplicate_reminders: bool = True
+    compact_old_tool_results: bool = True
+    compact_output_max_chars: int = Field(default=1200, ge=100)
+
+
+class StructuredHandoffConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    use_model: bool = True
+    max_protocol_retries: int = Field(default=2, ge=1)
+    fallback_deterministic: bool = True
+    max_confirmed_progress: int = Field(default=20, ge=1)
+    max_hypotheses: int = Field(default=5, ge=0)
+    max_next_actions: int = Field(default=5, ge=1)
+
+
+class ContextConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["full_history", "recent_window", "deterministic_prune", "structured_reset"] = "structured_reset"
+    model_context_limit: int = Field(default=32768, gt=0)
+    reserve_output_tokens: int = Field(default=4096, gt=0)
+    safety_margin_tokens: int = Field(default=1024, ge=0)
+    trigger_ratio: float = 0.72
+    hard_stop_ratio: float = 0.90
+    recent_full_turns: int = Field(default=6, ge=1)
+    repeat_task_anchor_at_end: bool = True
+    token_counter: ContextTokenCounterConfig = Field(default_factory=ContextTokenCounterConfig)
+    pruning: ContextPruningConfig = Field(default_factory=ContextPruningConfig)
+    structured_handoff: StructuredHandoffConfig = Field(default_factory=StructuredHandoffConfig)
+
+    @model_validator(mode="after")
+    def validate_budget(self) -> ContextConfig:
+        if self.reserve_output_tokens + self.safety_margin_tokens >= self.model_context_limit:
+            raise ValueError("context reserve_output_tokens + safety_margin_tokens must be < model_context_limit")
+        if not 0 < self.trigger_ratio < self.hard_stop_ratio < 1:
+            raise ValueError("context requires 0 < trigger_ratio < hard_stop_ratio < 1")
+        return self
+
+
 class ToolsConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -196,6 +253,7 @@ class AppConfig(BaseModel):
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     planning: PlanningConfig = Field(default_factory=PlanningConfig)
     state: StateConfig = Field(default_factory=StateConfig)
+    context: ContextConfig = Field(default_factory=ContextConfig)
     config_dir: Path = Field(default=Path("."), exclude=True)
 
     @model_validator(mode="after")

@@ -53,6 +53,13 @@ def project_statistics(
         float(session.get("duration_seconds") or _duration_seconds(session.get("started_at"), session.get("finished_at")))
         for session in sessions
     )
+    total_input_tokens = sum(int(session.get("input_tokens_total") or 0) for session in sessions)
+    total_output_tokens = sum(int(session.get("output_tokens_total") or 0) for session in sessions)
+    total_compactor_tokens = sum(
+        int(session.get("compactor_input_tokens") or 0) + int(session.get("compactor_output_tokens") or 0) for session in sessions
+    )
+    total_model_requests = sum(int(session.get("steps") or 0) + int(session.get("terminal_grace_turn_count") or 0) for session in sessions)
+    sessions_with_reset = [session for session in sessions if int(session.get("context_reset_count") or 0) > 0]
     changed_files = {
         path for session in sessions for path in [*(session.get("changed_files") or []), *(session.get("files_touched") or [])] if path
     }
@@ -70,6 +77,23 @@ def project_statistics(
         "project_sessions": len(sessions),
         "total_tool_calls": derived_tool_calls if total_tool_calls is None else total_tool_calls,
         "total_tokens": derived_tokens if total_tokens is None else total_tokens,
+        "total_input_tokens": total_input_tokens,
+        "total_output_tokens": total_output_tokens,
+        "total_compactor_tokens": total_compactor_tokens,
+        "max_context_usage_ratio": max((float(session.get("max_context_usage_ratio") or 0.0) for session in sessions), default=0.0),
+        "total_context_resets": sum(int(session.get("context_reset_count") or 0) for session in sessions),
+        "total_context_prunes": sum(int(session.get("deterministic_prune_count") or 0) for session in sessions),
+        "total_context_compactions": sum(int(session.get("structured_compaction_count") or 0) for session in sessions),
+        "total_stale_items_removed": sum(int(session.get("stale_item_count") or 0) for session in sessions),
+        "total_estimated_tokens_removed": sum(int(session.get("estimated_tokens_removed") or 0) for session in sessions),
+        "average_tokens_per_model_request": derived_tokens / total_model_requests if total_model_requests else 0.0,
+        "average_reset_recovery_steps": (
+            sum(int(session.get("steps") or 0) for session in sessions_with_reset) / len(sessions_with_reset)
+            if sessions_with_reset
+            else 0.0
+        ),
+        "sessions_with_context_reset": len(sessions_with_reset),
+        "context_budget_exhaustion_count": sum(1 for session in sessions if session.get("context_budget_exhausted")),
         "duration_seconds": duration_seconds,
         "wall_clock_seconds": duration_seconds if wall_clock_seconds is None else wall_clock_seconds,
         "configured_max_project_seconds": configured_max_project_seconds,

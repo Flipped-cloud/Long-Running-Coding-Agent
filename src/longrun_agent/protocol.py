@@ -24,6 +24,7 @@ class RunStatus(StrEnum):
     ABORTED = "aborted"
     PROVIDER_ERROR = "provider_error"
     PROTOCOL_ERROR = "protocol_error"
+    CONTEXT_BUDGET_EXHAUSTED = "context_budget_exhausted"
 
 
 class ToolCall(BaseModel):
@@ -100,6 +101,23 @@ class RunResult(BaseModel):
     run_json_path: str
     tool_call_count: int = 0
     total_tokens: int = 0
+    input_tokens_total: int = 0
+    output_tokens_total: int = 0
+    compactor_input_tokens: int = 0
+    compactor_output_tokens: int = 0
+    max_estimated_input_tokens: int = 0
+    max_actual_input_tokens: int = 0
+    max_context_usage_ratio: float = 0.0
+    context_segment_count: int = 1
+    context_reset_count: int = 0
+    deterministic_prune_count: int = 0
+    structured_compaction_count: int = 0
+    pruned_item_count: int = 0
+    stale_item_count: int = 0
+    superseded_item_count: int = 0
+    estimated_tokens_removed: int = 0
+    context_budget_exhausted: bool = False
+    latest_context_handoff_id: str | None = None
     terminal_grace_turn_count: int = 0
     terminal_signal_recovered: bool = False
     tool_argument_protocol_retry_count: int = 0

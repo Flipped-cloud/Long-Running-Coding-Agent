@@ -7,11 +7,12 @@ from datetime import datetime
 
 from longrun_agent.agent.loop import AgentLoop, default_router
 from longrun_agent.config import AppConfig
+from longrun_agent.context.lifecycle import ContextLifecycleManager
 from longrun_agent.control.channel import ControlSignalType, TaskControlChannel
 from longrun_agent.control.tools import control_tools
 from longrun_agent.model.base import ModelProvider
 from longrun_agent.orchestration.outcome import ProjectRunOutcome
-from longrun_agent.orchestration.session_prompt import build_task_session_prompt
+from longrun_agent.orchestration.session_prompt import build_task_context_seed, build_task_session_prompt
 from longrun_agent.orchestration.session_trace import SessionTrace
 from longrun_agent.planning.decomposer import AsNeededDecomposer
 from longrun_agent.planning.initial_planner import InitialPlanner
@@ -190,6 +191,20 @@ class ProjectOrchestrator:
     ):
         router = ToolRouter([*default_router().tools.values(), *control_tools()])
         trace = SessionTrace()
+        seed = build_task_context_seed(state, task)
+        context_manager = ContextLifecycleManager(
+            self.config.context,
+            seed=seed,
+            model=self.model,
+            store=self.store,
+            project_id=state.project_id,
+            task_id=task.id,
+            session_id=session_id,
+            run_id=session_id,
+            plan_version=state.plan_version,
+            workspace_root=self.config.workspace.root,
+            event_sink=lambda event_type, payload: self._log_session_event(state, task, session_id, event_type, payload),
+        )
         loop = AgentLoop(
             self.config,
             self.model,
@@ -226,7 +241,16 @@ class ProjectOrchestrator:
             stop_condition=lambda: channel.terminal_signal is not None,
             require_external_terminal=True,
             completion_evidence=lambda: trace.has_completion_evidence(existing_changed_files=task.files_touched),
+            context_seed=seed,
+            context_manager=context_manager,
+            project_id=state.project_id,
+            task_id=task.id,
+            session_id=session_id,
         )
+        if result.latest_context_handoff_id:
+            task.latest_context_handoff_id = result.latest_context_handoff_id
+        task.context_reset_count += result.context_reset_count
+        task.context_compaction_count += result.structured_compaction_count
         if result.terminal_grace_turn_count:
             self._logger(state).log(
                 "terminal_grace_turn_finished",
@@ -562,6 +586,23 @@ class ProjectOrchestrator:
                 trace.tool_argument_protocol_retry_count,
                 result.tool_argument_protocol_retry_count,
             ),
+            "input_tokens_total": result.input_tokens_total,
+            "output_tokens_total": result.output_tokens_total,
+            "compactor_input_tokens": result.compactor_input_tokens,
+            "compactor_output_tokens": result.compactor_output_tokens,
+            "max_estimated_input_tokens": result.max_estimated_input_tokens,
+            "max_actual_input_tokens": result.max_actual_input_tokens,
+            "max_context_usage_ratio": result.max_context_usage_ratio,
+            "context_segment_count": result.context_segment_count,
+            "context_reset_count": result.context_reset_count,
+            "deterministic_prune_count": result.deterministic_prune_count,
+            "structured_compaction_count": result.structured_compaction_count,
+            "pruned_item_count": result.pruned_item_count,
+            "stale_item_count": result.stale_item_count,
+            "superseded_item_count": result.superseded_item_count,
+            "estimated_tokens_removed": result.estimated_tokens_removed,
+            "context_budget_exhausted": result.context_budget_exhausted,
+            "latest_context_handoff_id": result.latest_context_handoff_id,
             "no_progress": trace.no_progress(progress_count=len(channel.progress_signals), terminal_signal=terminal),
             "handoff_summary": task.last_handoff_summary
             if terminal is None
@@ -576,6 +617,24 @@ class ProjectOrchestrator:
         }
 
     def _log_session_event(self, state: ProjectState, task: TaskNode, session_id: str, event_type: str, payload: dict) -> None:
+        if event_type.startswith("context_") or event_type == "token_estimation_error_recorded":
+            context_payload = {
+                "project_id": state.project_id,
+                "task_id": task.id,
+                "session_id": session_id,
+                "event_type": event_type,
+                **payload,
+            }
+            self.store.append_context_event(context_payload)
+            self._logger(state).log(
+                event_type,
+                project_id=state.project_id,
+                task_id=task.id,
+                session_id=session_id,
+                plan_version=state.plan_version,
+                payload=context_payload,
+            )
+            return
         if event_type not in {
             "terminal_grace_turn_started",
             "terminal_grace_turn_finished",
