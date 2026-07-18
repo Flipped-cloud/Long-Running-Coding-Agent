@@ -29,17 +29,13 @@ def main() -> None:
         task_id = args.id or ""
         for task in service.tasks:
             if task.id == task_id:
-                print(
-                    f"{task.id}: {task.title} completed={task.completed} attempts={task.attempts}"
-                )
+                print(f"{task.id}: {task.title} completed={task.completed} attempts={task.attempts}")
                 return
         print(f"task not found: {task_id}")
         sys.exit(1)
     else:
         for task in service.tasks:
-            print(
-                f"{task.id}: {task.title} completed={task.completed} attempts={task.attempts}"
-            )
+            print(f"{task.id}: {task.title} completed={task.completed} attempts={task.attempts}")
 
 
 if __name__ == "__main__":

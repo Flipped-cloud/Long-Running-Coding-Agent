@@ -244,6 +244,101 @@ Project Session controls for the GLM configuration:
 - Project tool output returned to the model is capped while full artifacts remain on disk;
 - file-plan resume never regenerates or reloads the plan once state exists.
 
+## v0.3 Evidence-Aware Budgeted Context Lifecycle
+
+v0.3 studies effective context rather than long-term memory. Maximum context is the provider window; effective context is the smaller, current, high-signal state the model can reliably use. The implementation accounts for Lost in the Middle position effects and provides lightweight RULER-style probes for constraint recall, multi-constraint retrieval, state tracking, and evidence aggregation.
+
+Runtime boundaries:
+
+- `Project`: full objective.
+- `Task`: independently actionable subgoal.
+- `Session`: one orchestrated AgentLoop attempt.
+- `Context Segment`: one continuous model-input lifecycle inside the same session.
+- `Step`: one model request and its tool interactions.
+
+Context reset is not a new task session. It does not increment task attempts, project session count, task session IDs, decomposition counters, or no-progress counters. It only increments context segment/reset counters and rebuilds input from ProjectState plus the latest task-local structured handoff.
+
+```mermaid
+flowchart TD
+    Orchestrator["ProjectOrchestrator"] --> Seed["TaskContextSeed"]
+    Seed --> Lifecycle["ContextLifecycleManager"]
+    Lifecycle --> Budget["ContextBudgetManager"]
+    Budget --> Buffer["ContextBuffer"]
+    Buffer --> Provider["ModelProvider"]
+    Provider --> Tool["Tool Interaction"]
+    Tool --> Stale["StaleTracker"]
+    Stale --> Pruner["DeterministicPruner"]
+    Pruner --> Compactor["StructuredCompactor"]
+    Compactor --> Reset["Context Reset"]
+    Reset --> Same["Same Task Session"]
+```
+
+Context modes:
+
+- `full_history`: keep accumulated history with token telemetry and hard-stop safety.
+- `recent_window`: keep pinned task context plus recent complete interaction turns.
+- `deterministic_prune`: compact stale, superseded, and old observations without LLM calls.
+- `structured_reset`: deterministic pruning plus task-local structured handoff and same-session reset.
+
+Context artifacts:
+
+```text
+.runs/projects/<project_id>/context/
+  segments.jsonl
+  context_events.jsonl
+  handoffs/<handoff_id>.json
+```
+
+Context CLI:
+
+```bash
+longrun-agent context inspect --config configs/context_structured_reset.yaml --project-id <project-id> --session-id <session-id>
+longrun-agent context handoff --config configs/context_structured_reset.yaml --project-id <project-id> --handoff-id <handoff-id>
+```
+
+Probe CLI:
+
+```bash
+longrun-agent eval context \
+  --config evals/context_lifecycle/config.yaml \
+  --probe all \
+  --lengths 2048 \
+  --samples 3 \
+  --seed 42 \
+  --dry-run
+
+longrun-agent eval context \
+  --config evals/context_lifecycle/config.yaml \
+  --probe position \
+  --lengths 2048,4096,8192 \
+  --samples 20 \
+  --seed 42 \
+  --modes full_history,recent_window,deterministic_prune,structured_reset \
+  --output-dir .runs/context_evals/position_main
+```
+
+The context eval harness generates one base case and replays it under every requested mode, so comparisons are paired by `case_id`. Case IDs include probe, length, sample index, and seed. The four probe families are: Lost-in-the-Middle position constraint recall, RULER-style multi-constraint retrieval, state tracking over read/write/bash chains, and evidence aggregation over stale/current test results.
+
+Probe outputs are written to `cases.jsonl`, `predictions.jsonl`, `results.jsonl`, `summary.json`, and `summary.csv`. The model must answer through the probe-specific native tool call; provider errors and protocol errors count as failures and are not skipped.
+
+Before a real experiment, run the preflight checks:
+
+```bash
+bash scripts/context_preflight.sh
+python evals/context_lifecycle/activation_check.py --predictions .runs/context_evals/preflight_activation/predictions.jsonl
+```
+
+Ablation configs:
+
+```bash
+longrun-agent project start --config configs/context_full_history.yaml --task-file examples/task_service_repo/TASK.md
+longrun-agent project start --config configs/context_recent_window.yaml --task-file examples/task_service_repo/TASK.md
+longrun-agent project start --config configs/context_deterministic_prune.yaml --task-file examples/task_service_repo/TASK.md
+longrun-agent project start --config configs/context_structured_reset.yaml --task-file examples/task_service_repo/TASK.md
+```
+
+Structured handoff is task-local context recovery. It is not memory, skill learning, vector retrieval, Reflexion, or cross-project recall.
+
 ## Tools
 
 List registered tools and schemas:
@@ -309,11 +404,13 @@ git diff --check
 
 - The bash safety layer is minimal and is not a container sandbox.
 - Windows native execution is supported for tests, but Linux/WSL2 is the preferred target.
-- The runtime does not judge whether a coding task is truly complete after final answer.
+- The runtime does not treat a plain final answer as project task completion.
 - `write_file` is whole-file only; patch/edit tools are intentionally out of scope.
 - v0.2 candidate completion is planning-level only and is not externally verified.
+- v0.3 context compaction is conservative and task-local.
+- v0.3 context probes evaluate the context harness only; they are not a full RULER benchmark and do not evaluate the whole Coding Agent.
 - Bounded planning search evaluates one level of recovery candidates; it is not full ToT search.
 
 ## Next Stage
 
-The next topic is Context Lifecycle. Later stages can add verification gates, context management, memory, skills, handoff, and multi-agent orchestration. They are deliberately excluded from this baseline runtime.
+The next topic should be Verification or Memory. Memory, skills, vector retrieval, and multi-agent orchestration remain deliberately excluded from v0.3.

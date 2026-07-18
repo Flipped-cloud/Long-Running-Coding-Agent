@@ -2,8 +2,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 
 def test_cli_get_found(tmp_path: Path):
     db = tmp_path / "tasks.json"
