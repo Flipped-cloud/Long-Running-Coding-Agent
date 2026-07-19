@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from longrun_agent.protocol import RunResult, ToolCall, ToolResult
@@ -13,6 +15,35 @@ def _append_unique(items: list[str], value: str | None) -> None:
         items.append(value)
 
 
+SECRET_MARKERS = ("api_key", "apikey", "token", "secret", "password", "authorization", "bearer ")
+
+
+@dataclass
+class BashObservation:
+    command: str
+    argv: list[str]
+    exit_code: int | None
+    success: bool
+    is_verification: bool
+    output_excerpt: str
+    error_type: str | None
+    artifact_path: str | None
+    operation_index: int
+
+    def model_dump(self) -> dict[str, Any]:
+        return {
+            "command": self.command,
+            "argv": self.argv,
+            "exit_code": self.exit_code,
+            "success": self.success,
+            "is_verification": self.is_verification,
+            "output_excerpt": self.output_excerpt,
+            "error_type": self.error_type,
+            "artifact_path": self.artifact_path,
+            "operation_index": self.operation_index,
+        }
+
+
 @dataclass
 class SessionTrace:
     read_files: list[str] = field(default_factory=list)
@@ -20,10 +51,12 @@ class SessionTrace:
     changed_files: list[str] = field(default_factory=list)
     bash_commands: list[str] = field(default_factory=list)
     bash_exit_codes: list[int] = field(default_factory=list)
+    bash_observations: list[BashObservation] = field(default_factory=list)
     successful_test_commands: list[str] = field(default_factory=list)
     successful_acceptance_commands: list[str] = field(default_factory=list)
     repeated_tool_calls: list[str] = field(default_factory=list)
     suppressed_tool_calls: list[str] = field(default_factory=list)
+    policy_gate_count: int = 0
     unsupported_shell_syntax_count: int = 0
     tool_argument_protocol_retry_count: int = 0
     last_tool_summary: str | None = None
@@ -49,6 +82,10 @@ class SessionTrace:
         self.last_tool_summary = "repeated tool call suppressed; previous result is already available"
         self._last_call_key = key
 
+    def record_policy_gate(self, result: ToolResult) -> None:
+        self.policy_gate_count += 1
+        self.last_tool_summary = result.summary
+
     def record(self, call: ToolCall, result: ToolResult) -> None:
         self._op_index += 1
         key = self.call_key(call)
@@ -70,8 +107,16 @@ class SessionTrace:
         elif call.name == "bash":
             command = str(result.metadata.get("command") or call.arguments.get("command") or " ".join(call.arguments.get("argv") or []))
             _append_unique(self.bash_commands, command)
+            argv = result.metadata.get("argv") or call.arguments.get("argv") or []
+            if not isinstance(argv, list):
+                argv = []
             if result.metadata.get("unsupported_shell_syntax"):
                 self.unsupported_shell_syntax_count += 1
+                self.action_required_message = (
+                    "unsupported_shell_syntax: retry the same intended command once using argv and no cd, pipes, "
+                    "redirection, &&, ||, or semicolons. Example: "
+                    '{"argv": ["python", "-m", "pytest", "-q"], "cwd": "."}.'
+                )
             exit_code = result.metadata.get("exit_code")
             if isinstance(exit_code, int):
                 self.bash_exit_codes.append(exit_code)
@@ -80,6 +125,22 @@ class SessionTrace:
                     _append_unique(self.successful_acceptance_commands, command)
                 if exit_code == 0 and "pytest" in command:
                     _append_unique(self.successful_test_commands, command)
+            self.bash_observations.append(
+                BashObservation(
+                    command=command,
+                    argv=[str(item) for item in argv],
+                    exit_code=exit_code if isinstance(exit_code, int) else None,
+                    success=result.success,
+                    is_verification=_is_verification_command(command),
+                    output_excerpt=_safe_excerpt(
+                        result.output,
+                        artifact_path=str(result.artifact_path or result.metadata.get("output_artifact") or ""),
+                    ),
+                    error_type=result.error_type.value if result.error_type else None,
+                    artifact_path=_sanitize_artifact_path(str(result.artifact_path or result.metadata.get("output_artifact") or "")),
+                    operation_index=self._op_index,
+                )
+            )
             self.last_bash_summary = result.summary
             if result.success and _is_read_only_bash(command):
                 self._record_read_only_success()
@@ -102,7 +163,13 @@ class SessionTrace:
         self.action_required_message = None
 
     def no_progress(self, *, progress_count: int, terminal_signal: object | None) -> bool:
-        return not self.changed_files and not self.successful_test_commands and progress_count == 0 and terminal_signal is None
+        return (
+            not self.changed_files
+            and not self.successful_test_commands
+            and progress_count == 0
+            and terminal_signal is None
+            and self.policy_gate_count == 0
+        )
 
     def has_completion_evidence(self, *, existing_changed_files: list[str] | None = None) -> bool:
         changed = bool(self.changed_files or existing_changed_files)
@@ -149,10 +216,12 @@ class SessionTrace:
             "changed_files": self.changed_files,
             "bash_commands": self.bash_commands,
             "bash_exit_codes": self.bash_exit_codes,
+            "bash_observations": [item.model_dump() for item in self.bash_observations],
             "successful_test_commands": self.successful_test_commands,
             "successful_acceptance_commands": self.successful_acceptance_commands,
             "repeated_tool_calls": self.repeated_tool_calls,
             "suppressed_tool_calls": self.suppressed_tool_calls,
+            "policy_gate_count": self.policy_gate_count,
             "unsupported_shell_syntax_count": self.unsupported_shell_syntax_count,
             "tool_argument_protocol_retry_count": self.tool_argument_protocol_retry_count,
             "last_tool_summary": self.last_tool_summary,
@@ -167,3 +236,39 @@ def _is_read_only_bash(command: str) -> bool:
 def _is_verification_command(command: str) -> bool:
     lowered = command.lower()
     return "pytest" in lowered or "task_service.cli" in lowered or "validate" in lowered
+
+
+def _safe_excerpt(output: str, *, workspace: object | None = None, artifact_path: str = "", limit: int = 4000) -> str:
+    text = output or ""
+    if not text and artifact_path:
+        try:
+            text = Path(artifact_path).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            text = ""
+    for raw_path in [workspace, Path(artifact_path).parent if artifact_path else None]:
+        if raw_path:
+            text = text.replace(str(raw_path), "<workspace>")
+    text = re.sub(r"[A-Za-z]:\\[^\s:]+", "<path>", text)
+    text = re.sub(r"/(?:Users|home|tmp|var)/[^\s:]+", "<path>", text)
+    text = _redact_secret_lines(text)
+    if len(text) <= limit:
+        return text
+    half = limit // 2
+    return text[:half] + "\n...[truncated]...\n" + text[-half:]
+
+
+def _redact_secret_lines(text: str) -> str:
+    redacted: list[str] = []
+    for line in text.splitlines():
+        lowered = line.lower()
+        if any(marker in lowered for marker in SECRET_MARKERS):
+            redacted.append("[redacted credential line]")
+        else:
+            redacted.append(line)
+    return "\n".join(redacted)
+
+
+def _sanitize_artifact_path(path: str) -> str | None:
+    if not path:
+        return None
+    return Path(path).name

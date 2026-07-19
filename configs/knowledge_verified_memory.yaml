@@ -1,0 +1,64 @@
+model:
+  provider: fake
+  model_name: fake-scripted
+  base_url: null
+  api_key_env: MODEL_API_KEY
+  temperature: 0.0
+  max_output_tokens: 2048
+  request_timeout_seconds: 30
+  max_api_retries: 1
+
+agent:
+  max_steps: 10
+  max_consecutive_errors: 5
+
+workspace:
+  root: ../examples/task_service_repo
+
+tools:
+  read_file:
+    max_lines: 200
+    max_chars: 30000
+  write_file:
+    max_chars: 200000
+    save_diff: true
+  bash:
+    timeout_seconds: 30
+    max_output_chars: 20000
+    shell: false
+
+telemetry:
+  run_root: ../.runs
+  save_prompts: true
+  save_full_tool_outputs: true
+
+planning:
+  mode: static
+  initial_plan:
+    min_tasks: 2
+    max_tasks: 8
+    max_protocol_retries: 2
+  execution:
+    max_project_sessions: 30
+    attempts_before_decomposition: 1
+  decomposition:
+    max_depth: 3
+    min_children: 2
+    max_children: 5
+    max_protocol_retries: 2
+  bounded_search:
+    enabled: false
+    candidate_count: 3
+    max_protocol_retries: 2
+
+state:
+  root: ../.runs/projects
+  atomic_write: true
+
+knowledge:
+  mode: verified_memory
+  root: ../.runs/knowledge
+  memory:
+    max_retrieved: 4
+    max_context_tokens: 1800
+    minimum_retrieval_score: 0.25

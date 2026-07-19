@@ -10,6 +10,13 @@ from longrun_agent.config import AppConfig
 from longrun_agent.context.lifecycle import ContextLifecycleManager
 from longrun_agent.control.channel import ControlSignalType, TaskControlChannel
 from longrun_agent.control.tools import control_tools
+from longrun_agent.knowledge.consolidator import KnowledgeConsolidator, KnowledgeSessionOutcome
+from longrun_agent.knowledge.evidence import RepositoryProfiler, build_experience_pack
+from longrun_agent.knowledge.renderer import render_bundle
+from longrun_agent.knowledge.retrieval import retrieve_bundle
+from longrun_agent.knowledge.schema import KnowledgeRetrievalQuery, KnowledgeUseType
+from longrun_agent.knowledge.store import KnowledgeStore
+from longrun_agent.knowledge.tools import KnowledgeUseChannel, ReportKnowledgeUseTool
 from longrun_agent.model.base import ModelProvider
 from longrun_agent.orchestration.outcome import ProjectRunOutcome
 from longrun_agent.orchestration.session_prompt import build_task_context_seed, build_task_session_prompt
@@ -18,7 +25,7 @@ from longrun_agent.planning.decomposer import AsNeededDecomposer
 from longrun_agent.planning.initial_planner import InitialPlanner
 from longrun_agent.planning.recovery_evaluator import RecoveryCandidateEvaluator
 from longrun_agent.planning.recovery_generator import RecoveryCandidateGenerator
-from longrun_agent.protocol import RunResult, RunStatus, ToolResult
+from longrun_agent.protocol import ErrorType, RunResult, RunStatus, ToolResult
 from longrun_agent.state.aggregation import aggregate_candidate_complete_parents, project_statistics
 from longrun_agent.state.schema import CompletionCandidate, PlanRevision, ProjectState, ProjectStatus, TaskNode, TaskStatus, utc_now
 from longrun_agent.state.selector import TaskSelector
@@ -46,6 +53,16 @@ class ProjectOrchestrator:
         self.transitions = StateTransitionController()
         self.selector = TaskSelector(self.transitions)
         self._last_final_verification_exit_code: int | None = None
+        self.knowledge_store = (
+            KnowledgeStore(
+                config.knowledge.root,
+                workspace_root=config.workspace.root,
+                atomic_write=config.state.atomic_write,
+                record_mutation_policy=config.knowledge.record_mutation_policy,
+            )
+            if config.knowledge.mode != "disabled"
+            else None
+        )
 
     def start(self, objective: str) -> ProjectRunOutcome:
         if self.store.exists(self.project_id):
@@ -126,10 +143,20 @@ class ProjectOrchestrator:
                 "task_started", project_id=state.project_id, task_id=task.id, session_id=session_id, plan_version=state.plan_version
             )
             channel = TaskControlChannel()
-            result, trace = self._run_task_session(state, task, channel, session_id, project_deadline)
+            starting_task_status = task.status.value
+            result, trace, knowledge_channel, knowledge_bundle = self._run_task_session(state, task, channel, session_id, project_deadline)
             run_statuses.append(result.status)
             self._process_control_signals(state, task, channel, session_id, result, trace)
-            self.store.append_session(state.project_id, self._session_record(state, task, session_id, result, channel, trace))
+            session_record = self._session_record(state, task, session_id, result, channel, trace)
+            self._process_knowledge_after_session(
+                state,
+                task,
+                session_record,
+                starting_task_status=starting_task_status,
+                knowledge_channel=knowledge_channel,
+                knowledge_bundle=knowledge_bundle,
+            )
+            self.store.append_session(state.project_id, session_record)
             self.store.save(state)
             self._write_metrics(state, project_started)
             if state.status in {ProjectStatus.CANDIDATE_COMPLETE, ProjectStatus.BLOCKED, ProjectStatus.FAILED}:
@@ -189,9 +216,20 @@ class ProjectOrchestrator:
         session_id: str,
         project_deadline: float,
     ):
-        router = ToolRouter([*default_router().tools.values(), *control_tools()])
+        knowledge_context, knowledge_bundle = self._retrieve_knowledge_for_task(state, task, session_id)
+        knowledge_channel = KnowledgeUseChannel(
+            exposed_memory_ids=knowledge_bundle.primary_memory_ids,
+            exposed_skill_ids=knowledge_bundle.primary_skill_ids,
+        )
+        knowledge_tools = [ReportKnowledgeUseTool()] if self.config.knowledge.mode != "disabled" else []
+        router = ToolRouter([*default_router().tools.values(), *control_tools(), *knowledge_tools])
         trace = SessionTrace()
-        seed = build_task_context_seed(state, task)
+        seed = build_task_context_seed(
+            state,
+            task,
+            knowledge_context=knowledge_context,
+            knowledge_retrieval_id=knowledge_bundle.retrieval_id if knowledge_context else None,
+        )
         context_manager = ContextLifecycleManager(
             self.config.context,
             seed=seed,
@@ -232,6 +270,7 @@ class ProjectOrchestrator:
                 plan_version=state.plan_version,
                 payload={"command": result.metadata.get("command"), "message": result.error_message},
             ),
+            knowledge_channel=knowledge_channel,
         )
         loop.router = router_with_channel
         result = loop.run_with_controls(
@@ -268,7 +307,194 @@ class ProjectOrchestrator:
                 session_id=session_id,
                 plan_version=state.plan_version,
             )
-        return result, trace
+        return result, trace, knowledge_channel, knowledge_bundle
+
+    def _retrieve_knowledge_for_task(self, state: ProjectState, task: TaskNode, session_id: str):
+        if self.config.knowledge.mode == "disabled":
+            from longrun_agent.knowledge.schema import RetrievedKnowledgeBundle
+
+            return None, RetrievedKnowledgeBundle()
+        assert self.knowledge_store is not None
+        try:
+            profile = RepositoryProfiler(self.config.workspace.root).profile()
+            query = KnowledgeRetrievalQuery(
+                task_objective=task.objective,
+                acceptance_criteria=task.acceptance_criteria,
+                repository_fingerprint=profile.repository_fingerprint,
+                language_tags=profile.language_tags,
+                framework_tags=profile.framework_tags,
+                tool_tags=profile.tool_tags,
+                project_id=state.project_id,
+                blocker=task.blocker,
+                recent_error_signatures=task.progress_notes[-3:],
+            )
+            bundle, _scores = retrieve_bundle(self.config.knowledge, self.knowledge_store, query)
+            rendered, tokens = render_bundle(bundle, self.config.knowledge)
+            bundle.total_estimated_tokens = tokens
+            primary_memories = [memory for memory in bundle.memories if memory.memory_id in bundle.primary_memory_ids]
+            primary_skills = [skill for skill in bundle.skills if skill.skill_id in bundle.primary_skill_ids]
+            if primary_memories:
+                for memory in primary_memories:
+                    self.knowledge_store.add_memory_usage(
+                        memory.memory_id,
+                        KnowledgeUseType.EXPOSED,
+                        project_id=state.project_id,
+                        task_id=task.id,
+                        session_id=session_id,
+                        retrieval_id=bundle.retrieval_id,
+                        reason="injected into task context",
+                    )
+                self.knowledge_store.append_event(
+                    "memory_exposed",
+                    project_id=state.project_id,
+                    task_id=task.id,
+                    retrieval_id=bundle.retrieval_id,
+                    memory_id=[memory.memory_id for memory in primary_memories],
+                    token_usage=tokens,
+                )
+            if primary_skills:
+                for skill in primary_skills:
+                    self.knowledge_store.add_skill_usage(
+                        skill.skill_id,
+                        KnowledgeUseType.EXPOSED,
+                        project_id=state.project_id,
+                        task_id=task.id,
+                        session_id=session_id,
+                        retrieval_id=bundle.retrieval_id,
+                        reason="injected into task context",
+                    )
+                self.knowledge_store.append_event(
+                    "skill_exposed",
+                    project_id=state.project_id,
+                    task_id=task.id,
+                    retrieval_id=bundle.retrieval_id,
+                    skill_id=[skill.skill_id for skill in primary_skills],
+                    token_usage=tokens,
+                )
+            return rendered or None, bundle
+        except Exception as exc:
+            self.knowledge_store.append_event("knowledge_error", project_id=state.project_id, task_id=task.id, reason=str(exc))
+            if self.config.knowledge.strict_errors:
+                raise
+            from longrun_agent.knowledge.schema import RetrievedKnowledgeBundle
+
+            return None, RetrievedKnowledgeBundle()
+
+    def _process_knowledge_after_session(
+        self,
+        state: ProjectState,
+        task: TaskNode,
+        session_record: dict,
+        *,
+        starting_task_status: str,
+        knowledge_channel: KnowledgeUseChannel,
+        knowledge_bundle,
+    ) -> None:
+        if self.config.knowledge.mode == "disabled":
+            return
+        assert self.knowledge_store is not None
+        try:
+            primary_memory_ids = list(getattr(knowledge_bundle, "primary_memory_ids", []))
+            primary_skill_ids = list(getattr(knowledge_bundle, "primary_skill_ids", []))
+            session_record["memories_retrieved"] = len(getattr(knowledge_bundle, "memories", []))
+            session_record["memories_exposed"] = len(primary_memory_ids)
+            session_record["skills_retrieved"] = len(getattr(knowledge_bundle, "skills", []))
+            session_record["skills_exposed"] = len(primary_skill_ids)
+            session_record["knowledge_tokens_injected"] = int(getattr(knowledge_bundle, "total_estimated_tokens", 0) or 0)
+            for field in (
+                "memories_referenced",
+                "memories_helpful",
+                "memories_harmful",
+                "skills_referenced",
+                "skills_helpful",
+                "skills_harmful",
+                "episodes_created",
+                "reflection_candidates",
+                "active_memories_created",
+                "quarantined_memories",
+                "skills_created",
+                "skills_validated",
+            ):
+                session_record[field] = 0
+
+            referenced_memory_ids = _dedupe([memory_id for record in knowledge_channel.records for memory_id in record.memory_ids])
+            referenced_skill_ids = _dedupe([skill_id for record in knowledge_channel.records for skill_id in record.skill_ids])
+            if knowledge_channel.decision_recorded and not knowledge_channel.records and knowledge_channel.not_used_reason:
+                self.knowledge_store.append_event(
+                    "knowledge_reviewed_not_used",
+                    project_id=state.project_id,
+                    task_id=task.id,
+                    session_id=session_record.get("session_id"),
+                    retrieval_id=getattr(knowledge_bundle, "retrieval_id", None),
+                    memory_ids=sorted(knowledge_channel.exposed_memory_ids),
+                    skill_ids=sorted(knowledge_channel.exposed_skill_ids),
+                    reason=knowledge_channel.not_used_reason,
+                )
+            unreferenced_memory_ids = sorted(set(primary_memory_ids) - set(referenced_memory_ids))
+            unreferenced_skill_ids = sorted(set(primary_skill_ids) - set(referenced_skill_ids))
+            if unreferenced_memory_ids or unreferenced_skill_ids:
+                self.knowledge_store.append_event(
+                    "knowledge_exposed_but_not_referenced",
+                    project_id=state.project_id,
+                    task_id=task.id,
+                    session_id=session_record.get("session_id"),
+                    memory_ids=unreferenced_memory_ids,
+                    skill_ids=unreferenced_skill_ids,
+                )
+
+            pack = build_experience_pack(
+                project_id=state.project_id,
+                task_id=task.id,
+                task_objective=task.objective,
+                acceptance_criteria=task.acceptance_criteria,
+                session_record=session_record,
+                plan_version=state.plan_version,
+                starting_task_status=starting_task_status,
+                ending_task_status=task.status.value,
+                workspace_root=self.config.workspace.root,
+                max_evidence_items=self.config.knowledge.episode.max_evidence_items,
+            )
+            attribution = _knowledge_attribution(task, pack)
+            outcome = KnowledgeSessionOutcome(
+                project_id=state.project_id,
+                task_id=task.id,
+                session_id=session_record.get("session_id") or "",
+                repository_fingerprint=pack.repository_fingerprint,
+                referenced_memory_ids=referenced_memory_ids,
+                referenced_skill_ids=referenced_skill_ids,
+                attribution=attribution,
+                verification_passed=bool(pack.successful_verifications),
+                candidate_complete=task.status == TaskStatus.CANDIDATE_COMPLETE,
+                experience_pack=pack,
+            )
+            result = KnowledgeConsolidator(self.config.knowledge, self.knowledge_store, self.model).consolidate(outcome)
+
+            session_record["memories_referenced"] = len(referenced_memory_ids)
+            session_record["skills_referenced"] = len(referenced_skill_ids)
+            if attribution == KnowledgeUseType.HELPFUL:
+                session_record["memories_helpful"] = len(referenced_memory_ids)
+                session_record["skills_helpful"] = len(referenced_skill_ids)
+            elif attribution == KnowledgeUseType.HARMFUL:
+                session_record["memories_harmful"] = len(referenced_memory_ids)
+                session_record["skills_harmful"] = len(referenced_skill_ids)
+            episode_path = self.knowledge_store.episode_path(self.store.project_dir(state.project_id), pack.episode_id)
+            session_record["episodes_created"] = int(episode_path.exists())
+            created_memories = [self.knowledge_store.load_memory(memory_id) for memory_id in result.created_memory_ids]
+            session_record["reflection_candidates"] = len(created_memories)
+            session_record["active_memories_created"] = sum(memory.status.value == "active" for memory in created_memories)
+            session_record["quarantined_memories"] = sum(memory.status.value == "quarantined" for memory in created_memories)
+            created_skills = [self.knowledge_store.load_skill(skill_id) for skill_id in result.created_skill_ids]
+            session_record["skills_created"] = len(created_skills)
+            session_record["skills_validated"] = sum(skill.status.value == "validated" for skill in created_skills)
+        except Exception as exc:
+            self.knowledge_store.append_event(
+                "knowledge_error",
+                project_id=state.project_id,
+                task_id=task.id,
+                reason=str(exc),
+            )
+            if self.config.knowledge.strict_errors:
+                raise
 
     def _process_control_signals(
         self,
@@ -563,6 +789,7 @@ class ProjectOrchestrator:
             "started_at": result.started_at,
             "finished_at": result.finished_at,
             "duration_seconds": _duration_seconds(result.started_at, result.finished_at),
+            "repository_fingerprint": RepositoryProfiler(self.config.workspace.root).profile().repository_fingerprint,
             "steps": result.steps,
             "tool_call_count": result.tool_call_count,
             "total_tokens": result.total_tokens,
@@ -573,6 +800,7 @@ class ProjectOrchestrator:
             "changed_files": trace.changed_files,
             "bash_commands": trace.bash_commands,
             "bash_exit_codes": trace.bash_exit_codes,
+            "bash_observations": [item.model_dump() for item in trace.bash_observations],
             "successful_test_commands": trace.successful_test_commands,
             "successful_acceptance_commands": trace.successful_acceptance_commands,
             "repeated_tool_calls": trace.repeated_tool_calls,
@@ -582,6 +810,10 @@ class ProjectOrchestrator:
             "auto_completion_recovered": task.auto_completion_recovered,
             "completion_candidate": task.completion_candidate.model_dump(mode="json") if task.completion_candidate else None,
             "unsupported_shell_syntax_count": trace.unsupported_shell_syntax_count,
+            "protocol_error_count": result.protocol_error_count,
+            "recoverable_protocol_error_count": result.recoverable_protocol_error_count,
+            "fatal_protocol_error_count": result.fatal_protocol_error_count,
+            "provider_error_count": result.provider_error_count,
             "tool_argument_protocol_retry_count": max(
                 trace.tool_argument_protocol_retry_count,
                 result.tool_argument_protocol_retry_count,
@@ -765,6 +997,15 @@ def _duration_seconds(started_at: str, finished_at: str) -> float:
         return 0.0
 
 
+def _knowledge_attribution(task: TaskNode, pack) -> KnowledgeUseType:
+    verified_success = task.status == TaskStatus.CANDIDATE_COMPLETE and bool(pack.successful_verifications)
+    if verified_success:
+        return KnowledgeUseType.HELPFUL
+    if pack.files_changed and pack.failed_verifications and not pack.successful_verifications:
+        return KnowledgeUseType.HARMFUL
+    return KnowledgeUseType.NEUTRAL
+
+
 class _ChannelRouter(ToolRouter):
     def __init__(
         self,
@@ -773,16 +1014,38 @@ class _ChannelRouter(ToolRouter):
         trace: SessionTrace,
         on_suppressed=None,
         on_unsupported_shell=None,
+        knowledge_channel=None,
     ):
         super().__init__(list(inner.tools.values()))
         self.channel = channel
         self.trace = trace
         self.on_suppressed = on_suppressed
         self.on_unsupported_shell = on_unsupported_shell
+        self.knowledge_channel = knowledge_channel
         self.action_required_message: str | None = None
 
     def execute(self, call, context):
         context.control_channel = self.channel
+        context.knowledge_channel = self.knowledge_channel
+        if self._knowledge_decision_blocks(call):
+            result = ToolResult(
+                tool_call_id=call.id,
+                tool_name=call.name,
+                success=False,
+                summary="knowledge_decision_required",
+                output=(
+                    "Knowledge decision required before this action.\n"
+                    "Call report_knowledge_use:\n"
+                    "- with the exposed IDs that materially affected the task; or\n"
+                    "- with empty ID lists and a reason when none were used."
+                ),
+                error_type=ErrorType.POLICY_GATE,
+                error_message="knowledge_decision_required",
+                metadata={"knowledge_decision_required": True},
+            )
+            self.trace.record_policy_gate(result)
+            self.action_required_message = result.output
+            return result
         if self.trace.should_suppress(call):
             self.trace.record_suppressed(call)
             call_key = self.trace.call_key(call)
@@ -811,6 +1074,27 @@ class _ChannelRouter(ToolRouter):
     def record_protocol_retry(self) -> None:
         self.trace.record_protocol_retry()
 
+    def knowledge_decision_pending(self) -> bool:
+        return bool(
+            self.knowledge_channel is not None
+            and self.knowledge_channel.has_exposed_knowledge()
+            and not self.knowledge_channel.decision_recorded
+        )
+
+    def _knowledge_decision_blocks(self, call) -> bool:
+        if not self.knowledge_decision_pending():
+            return False
+        if call.name in {
+            "write_file",
+            "request_task_completion",
+            "report_blocker",
+            "request_decomposition",
+        }:
+            return True
+        if call.name == "bash" and _is_verification_tool_call(call.arguments):
+            return True
+        return False
+
 
 def _dedupe(items: list[str]) -> list[str]:
     deduped: list[str] = []
@@ -818,3 +1102,9 @@ def _dedupe(items: list[str]) -> list[str]:
         if item and item not in deduped:
             deduped.append(item)
     return deduped
+
+
+def _is_verification_tool_call(arguments: dict) -> bool:
+    command = str(arguments.get("command") or " ".join(arguments.get("argv") or []))
+    lowered = command.lower()
+    return "pytest" in lowered or " validate" in f" {lowered} " or " test" in f" {lowered} "

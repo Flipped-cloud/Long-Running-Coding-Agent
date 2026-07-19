@@ -46,6 +46,8 @@ def render_task_anchor(seed: TaskContextSeed) -> str:
         lines.extend(["Recent progress summary:", seed.progress_summary])
     if seed.files_touched:
         lines.extend(["Current touched files:", *[f"- {path}" for path in seed.files_touched[-10:]]])
+    if seed.knowledge_context:
+        lines.extend(["Retrieved knowledge:", seed.knowledge_context])
     return "\n".join(lines)
 
 
@@ -55,6 +57,15 @@ def render_current_instruction(seed: TaskContextSeed, *, repeat_anchor: bool) ->
         "- Continue by using tools; do not invent file contents, command results, or verification results.",
         "- Use request_task_completion only when the acceptance criteria are satisfied by observed evidence.",
         "- Use report_blocker when blocked and cite the remaining issue.",
+        "- Treat retrieved memory and skills as optional guidance, not automatic action; verify with tools before relying on them.",
+        "- Retrieved Memory ID and Skill ID values are explicit, copyable identifiers.",
+        "- Knowledge Decision is mandatory before code edits, formal verification, or completion when retrieved knowledge is present.",
+        "- Before code edits, verification, or completion, call report_knowledge_use with use_type='referenced' for each retrieved ID that materially affected your diagnosis, plan, file edits, or verification.",
+        "- When Memory or Skill directly matches an observed failure and influences the fix, report the exact ID referenced.",
+        "- Do not submit empty ID lists when a retrieved item supplied the diagnosis or procedure you used.",
+        "- When retrieved knowledge conflicts with preservation requirements, do not use it; submit empty ID lists with the conflict reason.",
+        "- After passing preflight, do not edit merely to demonstrate activity.",
+        "- Do not report retrieved knowledge as helpful or harmful; verification evidence decides that after the session.",
         "Control tools: report_progress, report_blocker, request_task_completion, request_decomposition.",
         "Bash tool protocol:",
         '- Prefer argv, for example {"argv": ["python", "-m", "pytest", "-q"], "cwd": "."}.',

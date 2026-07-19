@@ -6,7 +6,13 @@ from longrun_agent.context.schema import TaskContextSeed
 from longrun_agent.state.schema import ProjectState, TaskNode
 
 
-def build_task_context_seed(state: ProjectState, task: TaskNode) -> TaskContextSeed:
+def build_task_context_seed(
+    state: ProjectState,
+    task: TaskNode,
+    *,
+    knowledge_context: str | None = None,
+    knowledge_retrieval_id: str | None = None,
+) -> TaskContextSeed:
     dependency_summaries = []
     for dependency_id in task.dependencies:
         dependency = state.task_by_id(dependency_id)
@@ -29,6 +35,8 @@ def build_task_context_seed(state: ProjectState, task: TaskNode) -> TaskContextS
         progress_summary="\n".join(recent_notes) if recent_notes else None,
         files_touched=task.files_touched[-10:],
         latest_handoff_id=task.latest_context_handoff_id,
+        knowledge_context=knowledge_context,
+        knowledge_retrieval_id=knowledge_retrieval_id,
     )
 
 

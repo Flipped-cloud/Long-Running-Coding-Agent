@@ -3,12 +3,19 @@ from pathlib import Path
 
 import pytest
 
-from longrun_agent.agent.loop import AgentLoop
+from longrun_agent.agent.loop import AgentLoop, default_router
 from longrun_agent.config import AgentConfig, AppConfig, BashConfig, ModelConfig, TelemetryConfig, ToolsConfig, WorkspaceConfig
+from longrun_agent.control.channel import ControlSignalType, TaskControlChannel
+from longrun_agent.control.tools import control_tools
 from longrun_agent.exceptions import ProviderError
+from longrun_agent.knowledge.tools import KnowledgeUseChannel, ReportKnowledgeUseTool
 from longrun_agent.model.base import ModelProvider
 from longrun_agent.model.fake import FakeModelProvider, default_calculator_script
-from longrun_agent.protocol import FinalAnswer, ModelResponse, RunStatus, ToolCall
+from longrun_agent.orchestration.orchestrator import _ChannelRouter
+from longrun_agent.orchestration.session_trace import SessionTrace
+from longrun_agent.protocol import ErrorType, FinalAnswer, ModelResponse, RunStatus, ToolCall
+from longrun_agent.tools.base import ToolContext
+from longrun_agent.tools.router import ToolRouter
 
 
 class RaisingProvider(ModelProvider):
@@ -150,3 +157,162 @@ def test_fake_provider_response_exhaustion():
     provider = FakeModelProvider([])
     with pytest.raises(ProviderError):
         provider.generate([], [])
+
+
+def test_terminal_tool_schema_allows_knowledge_decision(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    router = ToolRouter([*default_router().tools.values(), *control_tools(), ReportKnowledgeUseTool()])
+    loop = AgentLoop(config(repo, tmp_path / ".runs"), FakeModelProvider([]), router=router)
+    names = {schema["function"]["name"] for schema in loop._schemas(terminal_tools_only=True)}
+    assert {"request_task_completion", "report_blocker", "report_knowledge_use"} <= names
+
+
+def test_report_knowledge_use_executes_before_completion_in_same_response(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    channel = TaskControlChannel()
+    knowledge = KnowledgeUseChannel(exposed_memory_ids=["m1"], exposed_skill_ids=[])
+    trace = SessionTrace()
+    inner = ToolRouter([*default_router().tools.values(), *control_tools(), ReportKnowledgeUseTool()])
+    router = _ChannelRouter(inner, channel, trace, knowledge_channel=knowledge)
+    responses = [
+        ModelResponse(
+            tool_calls=[
+                ToolCall(
+                    id="complete",
+                    name="request_task_completion",
+                    arguments={"summary": "done", "acceptance_criteria_addressed": ["verified"]},
+                ),
+                ToolCall(
+                    id="decision",
+                    name="report_knowledge_use",
+                    arguments={"memory_ids": ["m1"], "skill_ids": [], "reason": "used memory"},
+                ),
+            ]
+        )
+    ]
+
+    result = AgentLoop(config(repo, tmp_path / ".runs", max_steps=1), FakeModelProvider(responses), router=router).run_with_controls(
+        repo,
+        "finish task",
+        stop_condition=lambda: channel.terminal_signal is not None,
+        require_external_terminal=True,
+    )
+
+    assert result.status == RunStatus.COMPLETED
+    assert knowledge.decision_recorded is True
+    assert channel.terminal_signal is not None
+    assert channel.terminal_signal.type == ControlSignalType.COMPLETION_REQUEST
+    events = [json.loads(line) for line in Path(result.event_log_path).read_text(encoding="utf-8").splitlines()]
+    tool_finished = [event["tool_name"] for event in events if event["event_type"] == "tool_finished"]
+    assert tool_finished[:2] == ["report_knowledge_use", "request_task_completion"]
+
+
+def test_knowledge_decision_gate_blocks_verification_until_reported(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    channel = TaskControlChannel()
+    knowledge = KnowledgeUseChannel(exposed_memory_ids=["m1"], exposed_skill_ids=[])
+    trace = SessionTrace()
+    router = _ChannelRouter(
+        ToolRouter([*default_router().tools.values(), *control_tools(), ReportKnowledgeUseTool()]),
+        channel,
+        trace,
+        knowledge_channel=knowledge,
+    )
+    context = ToolContext(repo)
+
+    blocked = router.execute(ToolCall(id="b1", name="bash", arguments={"argv": ["python", "-m", "pytest", "-q"]}), context)
+    assert not blocked.success
+    assert blocked.summary == "knowledge_decision_required"
+    assert blocked.error_type == ErrorType.POLICY_GATE
+    assert router.action_required_message
+
+    reported = router.execute(
+        ToolCall(
+            id="k1",
+            name="report_knowledge_use",
+            arguments={"memory_ids": [], "skill_ids": [], "reason": "reviewed but not needed"},
+        ),
+        context,
+    )
+    assert reported.success
+    assert knowledge.decision_recorded is True
+
+
+def test_gate_rejected_write_is_not_repeated_action(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    knowledge = KnowledgeUseChannel(exposed_memory_ids=["m1"], exposed_skill_ids=[])
+    trace = SessionTrace()
+    router = _ChannelRouter(
+        ToolRouter([*default_router().tools.values(), *control_tools(), ReportKnowledgeUseTool()]),
+        TaskControlChannel(),
+        trace,
+        knowledge_channel=knowledge,
+    )
+    context = ToolContext(repo)
+    call = ToolCall(id="w1", name="write_file", arguments={"path": "app.py", "content": "VALUE = 1\n"})
+
+    blocked = router.execute(call, context)
+
+    assert blocked.error_type == ErrorType.POLICY_GATE
+    assert trace.repeated_tool_calls == []
+    assert trace.suppressed_tool_calls == []
+    assert trace.changed_files == []
+    assert trace.no_progress(progress_count=0, terminal_signal=None) is False
+
+
+def test_write_after_knowledge_decision_is_legitimate_retry(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    knowledge = KnowledgeUseChannel(exposed_memory_ids=["m1"], exposed_skill_ids=[])
+    trace = SessionTrace()
+    router = _ChannelRouter(
+        ToolRouter([*default_router().tools.values(), *control_tools(), ReportKnowledgeUseTool()]),
+        TaskControlChannel(),
+        trace,
+        knowledge_channel=knowledge,
+    )
+    context = ToolContext(repo)
+    write = ToolCall(id="w1", name="write_file", arguments={"path": "app.py", "content": "VALUE = 1\n"})
+
+    blocked = router.execute(write, context)
+    reported = router.execute(
+        ToolCall(id="k1", name="report_knowledge_use", arguments={"memory_ids": ["m1"], "skill_ids": [], "reason": "used memory"}),
+        context,
+    )
+    retried = router.execute(ToolCall(id="w2", name="write_file", arguments=write.arguments), context)
+
+    assert blocked.error_type == ErrorType.POLICY_GATE
+    assert reported.success
+    assert retried.success
+    assert trace.repeated_tool_calls == []
+    assert trace.suppressed_tool_calls == []
+    assert trace.changed_files == ["app.py"]
+
+
+def test_policy_gate_does_not_increment_protocol_or_consecutive_errors(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    knowledge = KnowledgeUseChannel(exposed_memory_ids=["m1"], exposed_skill_ids=[])
+    trace = SessionTrace()
+    router = _ChannelRouter(
+        ToolRouter([*default_router().tools.values(), *control_tools(), ReportKnowledgeUseTool()]),
+        TaskControlChannel(),
+        trace,
+        knowledge_channel=knowledge,
+    )
+    responses = [
+        ModelResponse(tool_calls=[ToolCall(id="w1", name="write_file", arguments={"path": "app.py", "content": "VALUE = 1\n"})]),
+        ModelResponse(tool_calls=[ToolCall(id="w2", name="write_file", arguments={"path": "app.py", "content": "VALUE = 2\n"})]),
+    ]
+
+    result = AgentLoop(config(repo, tmp_path / ".runs", max_steps=2), FakeModelProvider(responses), router=router).run(repo, "task")
+
+    assert result.protocol_error_count == 0
+    assert result.recoverable_protocol_error_count == 0
+    assert result.fatal_protocol_error_count == 0
+    assert result.consecutive_errors == 0
+    assert trace.repeated_tool_calls == []

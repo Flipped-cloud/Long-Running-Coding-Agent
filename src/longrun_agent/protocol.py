@@ -11,6 +11,7 @@ class ErrorType(StrEnum):
 
     PROVIDER = "provider_error"
     PROTOCOL = "protocol_error"
+    POLICY_GATE = "policy_gate"
     TOOL = "tool_error"
     ENVIRONMENT = "environment_observation"
 
@@ -121,6 +122,31 @@ class RunResult(BaseModel):
     terminal_grace_turn_count: int = 0
     terminal_signal_recovered: bool = False
     tool_argument_protocol_retry_count: int = 0
+    unsupported_shell_syntax_count: int = 0
+    protocol_error_count: int = 0
+    recoverable_protocol_error_count: int = 0
+    fatal_protocol_error_count: int = 0
+    provider_error_count: int = 0
+    episodes_created: int = 0
+    reflection_candidates: int = 0
+    active_memories_created: int = 0
+    quarantined_memories: int = 0
+    memories_retrieved: int = 0
+    memories_exposed: int = 0
+    memories_referenced: int = 0
+    helpful_memory_uses: int = 0
+    harmful_memory_uses: int = 0
+    skills_created: int = 0
+    skills_validated: int = 0
+    skills_activated: int = 0
+    skills_retrieved: int = 0
+    skills_exposed: int = 0
+    skills_referenced: int = 0
+    helpful_skill_uses: int = 0
+    harmful_skill_uses: int = 0
+    knowledge_tokens_injected: int = 0
+    memory_conflicts: int = 0
+    negative_transfer_count: int = 0
 
 
 class EventRecord(BaseModel):

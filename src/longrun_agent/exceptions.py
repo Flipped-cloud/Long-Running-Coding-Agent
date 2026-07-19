@@ -9,6 +9,10 @@ class ConfigurationError(LongRunAgentError):
     """Raised when configuration is invalid or incomplete."""
 
 
+class KnowledgeMutationViolation(LongRunAgentError):
+    """Raised when frozen Memory or Skill records are mutated."""
+
+
 class ProviderError(LongRunAgentError):
     """Raised when the model provider cannot produce a response."""
 

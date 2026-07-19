@@ -36,6 +36,8 @@ class ContextItemKind(StrEnum):
     USER_REMINDER = "user_reminder"
     PROTOCOL_CORRECTION = "protocol_correction"
     CURRENT_INSTRUCTION = "current_instruction"
+    EPISODIC_MEMORY = "episodic_memory"
+    PROCEDURAL_SKILL = "procedural_skill"
 
 
 class ContextBudgetSnapshot(BaseModel):
@@ -86,6 +88,8 @@ class TaskContextSeed(BaseModel):
     progress_summary: str | None = None
     files_touched: list[str] = Field(default_factory=list)
     latest_handoff_id: str | None = None
+    knowledge_context: str | None = None
+    knowledge_retrieval_id: str | None = None
 
 
 class ContextPreparationAction(StrEnum):

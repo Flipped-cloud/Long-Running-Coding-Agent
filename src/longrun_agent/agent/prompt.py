@@ -4,6 +4,7 @@ Read necessary files before editing them. Run relevant tests after changes.
 Do not assume a tool succeeded; rely on the observation.
 Do not repeat exactly the same failed operation without new information.
 Bash commands already run in the configured workspace. Prefer bash argv; do not use cd, &&, ||, pipes, redirection, semicolons, or shell built-ins when shell=false.
+Use argv examples such as {"argv": ["find", ".", "-type", "f"], "cwd": "."} and {"argv": ["python", "-m", "pytest", "-q"], "cwd": "."}.
 Only produce a final answer when no more tools are needed.
 The final answer should briefly state what changed and how it was verified.
 Do not access content outside the configured workspace.

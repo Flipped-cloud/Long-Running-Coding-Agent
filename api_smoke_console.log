@@ -1,0 +1,281 @@
+{
+  "case_results": [
+    {
+      "case_id": "repo_a_learn",
+      "created_memory_ids": [
+        "MEM-a92439d854c4"
+      ],
+      "created_skill_ids": [],
+      "episode_ids": [
+        "EP-6db77ebaa115"
+      ],
+      "exposed_memory_ids": [],
+      "exposed_skill_ids": [],
+      "final_verification": {
+        "command": [
+          "python",
+          "-m",
+          "pytest",
+          "-q"
+        ],
+        "exit_code": 1,
+        "passed": false,
+        "stderr": "",
+        "stdout": "F.                                                                       [100%]\n=================================== FAILURES ===================================\n____________________ test_validate_task_name_rejects_empty _____________________\n\n    def test_validate_task_name_rejects_empty() -> None:\n        assert not validate_task_name(\"\")\n>       assert not validate_task_name(\"   \")\nE       AssertionError: assert not True\nE        +  where True = validate_task_name('   ')\n\ntests/test_task_app.py:11: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_task_app.py::test_validate_task_name_rejects_empty - Assert...\n1 failed, 1 passed in 0.73s\n"
+      },
+      "harmful_memory_ids": [],
+      "harmful_skill_ids": [],
+      "helpful_memory_ids": [],
+      "helpful_skill_ids": [],
+      "initial_verification": {
+        "command": [
+          "python",
+          "-m",
+          "pytest",
+          "-q"
+        ],
+        "exit_code": 1,
+        "passed": false,
+        "stderr": "",
+        "stdout": "F.                                                                       [100%]\n=================================== FAILURES ===================================\n____________________ test_validate_task_name_rejects_empty _____________________\n\n    def test_validate_task_name_rejects_empty() -> None:\n        assert not validate_task_name(\"\")\n>       assert not validate_task_name(\"   \")\nE       AssertionError: assert not True\nE        +  where True = validate_task_name('   ')\n\ntests/test_task_app.py:11: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_task_app.py::test_validate_task_name_rejects_empty - Assert...\n1 failed, 1 passed in 1.11s\n"
+      },
+      "input_tokens": 32858,
+      "knowledge_error": false,
+      "mode": "memory_skill",
+      "modified_after_run": false,
+      "output_tokens": 1627,
+      "project_id": "memory_skill-r1-repo_a_learn",
+      "project_status": "session_limit_reached",
+      "referenced_memory_ids": [],
+      "referenced_skill_ids": [],
+      "repeat": 1,
+      "repository": "/mnt/d/Python-Program/Long-Running-Coding-Agent/examples/knowledge_transfer/repo_a",
+      "reset_exit_code": 0,
+      "role": "learning_probe",
+      "session_count": 1,
+      "tool_call_count": 13,
+      "total_tokens": 34485,
+      "wall_time_seconds": 65.6801054680036
+    },
+    {
+      "case_id": "repo_a_reuse",
+      "created_memory_ids": [
+        "MEM-a92439d854c4"
+      ],
+      "created_skill_ids": [
+        "SKILL-dd5555931671"
+      ],
+      "episode_ids": [
+        "EP-56a097ba50d7"
+      ],
+      "exposed_memory_ids": [
+        "MEM-a92439d854c4"
+      ],
+      "exposed_skill_ids": [],
+      "final_verification": {
+        "command": [
+          "python",
+          "-m",
+          "pytest",
+          "-q"
+        ],
+        "exit_code": 0,
+        "passed": true,
+        "stderr": "",
+        "stdout": "..                                                                       [100%]\n2 passed in 0.08s\n"
+      },
+      "harmful_memory_ids": [],
+      "harmful_skill_ids": [],
+      "helpful_memory_ids": [],
+      "helpful_skill_ids": [],
+      "initial_verification": {
+        "command": [
+          "python",
+          "-m",
+          "pytest",
+          "-q"
+        ],
+        "exit_code": 1,
+        "passed": false,
+        "stderr": "",
+        "stdout": "F.                                                                       [100%]\n=================================== FAILURES ===================================\n____________________ test_validate_task_name_rejects_empty _____________________\n\n    def test_validate_task_name_rejects_empty() -> None:\n        assert not validate_task_name(\"\")\n>       assert not validate_task_name(\"   \")\nE       AssertionError: assert not True\nE        +  where True = validate_task_name('   ')\n\ntests/test_task_app.py:11: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_task_app.py::test_validate_task_name_rejects_empty - Assert...\n1 failed, 1 passed in 1.42s\n"
+      },
+      "input_tokens": 23197,
+      "knowledge_error": false,
+      "mode": "memory_skill",
+      "modified_after_run": true,
+      "output_tokens": 1273,
+      "project_id": "memory_skill-r1-repo_a_reuse",
+      "project_status": "candidate_complete",
+      "referenced_memory_ids": [],
+      "referenced_skill_ids": [],
+      "repeat": 1,
+      "repository": "/mnt/d/Python-Program/Long-Running-Coding-Agent/examples/knowledge_transfer/repo_a",
+      "reset_exit_code": 0,
+      "role": "same_repository_reuse",
+      "session_count": 1,
+      "tool_call_count": 8,
+      "total_tokens": 24470,
+      "wall_time_seconds": 48.95486723299837
+    },
+    {
+      "case_id": "repo_b_transfer",
+      "created_memory_ids": [
+        "MEM-a92439d854c4",
+        "MEM-b9b2fa7f0b56"
+      ],
+      "created_skill_ids": [
+        "SKILL-dd5555931671"
+      ],
+      "episode_ids": [
+        "EP-b5d58bd018dd"
+      ],
+      "exposed_memory_ids": [],
+      "exposed_skill_ids": [],
+      "final_verification": {
+        "command": [
+          "python",
+          "-m",
+          "pytest",
+          "-q"
+        ],
+        "exit_code": 0,
+        "passed": true,
+        "stderr": "",
+        "stdout": "....                                                                     [100%]\n4 passed in 0.05s\n"
+      },
+      "harmful_memory_ids": [],
+      "harmful_skill_ids": [],
+      "helpful_memory_ids": [],
+      "helpful_skill_ids": [],
+      "initial_verification": {
+        "command": [
+          "python",
+          "-m",
+          "pytest",
+          "-q"
+        ],
+        "exit_code": 1,
+        "passed": false,
+        "stderr": "",
+        "stdout": "F..F                                                                     [100%]\n=================================== FAILURES ===================================\n___________________ test_normalize_command_trims_whitespace ____________________\n\n    def test_normalize_command_trims_whitespace() -> None:\n>       assert normalize_command(\"  pytest -q  \") == \"pytest -q\"\nE       AssertionError: assert '  pytest -q  ' == 'pytest -q'\nE         \nE         - pytest -q\nE         +   pytest -q  \nE         ? ++         ++\n\ntests/test_command_app.py:10: AssertionError\n________________ test_is_valid_command_rejects_empty_after_trim ________________\n\n    def test_is_valid_command_rejects_empty_after_trim() -> None:\n>       assert not is_valid_command(\"   \")\nE       AssertionError: assert not True\nE        +  where True = is_valid_command('   ')\n\ntests/test_command_app.py:22: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_command_app.py::test_normalize_command_trims_whitespace - A...\nFAILED tests/test_command_app.py::test_is_valid_command_rejects_empty_after_trim\n2 failed, 2 passed in 0.83s\n"
+      },
+      "input_tokens": 41343,
+      "knowledge_error": false,
+      "mode": "memory_skill",
+      "modified_after_run": true,
+      "output_tokens": 1677,
+      "project_id": "memory_skill-r1-repo_b_transfer",
+      "project_status": "candidate_complete",
+      "referenced_memory_ids": [],
+      "referenced_skill_ids": [],
+      "repeat": 1,
+      "repository": "/mnt/d/Python-Program/Long-Running-Coding-Agent/examples/knowledge_transfer/repo_b",
+      "reset_exit_code": 0,
+      "role": "positive_transfer",
+      "session_count": 1,
+      "tool_call_count": 14,
+      "total_tokens": 43020,
+      "wall_time_seconds": 48.62337381499674
+    },
+    {
+      "case_id": "repo_c_negative",
+      "created_memory_ids": [
+        "MEM-a92439d854c4",
+        "MEM-b9b2fa7f0b56",
+        "MEM-fc3f602ac3af"
+      ],
+      "created_skill_ids": [
+        "SKILL-dd5555931671",
+        "SKILL-d03f051e8100"
+      ],
+      "episode_ids": [
+        "EP-4fcb7bc173e1"
+      ],
+      "exposed_memory_ids": [],
+      "exposed_skill_ids": [],
+      "final_verification": {
+        "command": [
+          "python",
+          "-m",
+          "pytest",
+          "-q"
+        ],
+        "exit_code": 0,
+        "passed": true,
+        "stderr": "",
+        "stdout": "................                                                         [100%]\n16 passed in 0.14s\n"
+      },
+      "harmful_memory_ids": [],
+      "harmful_skill_ids": [],
+      "helpful_memory_ids": [],
+      "helpful_skill_ids": [],
+      "initial_verification": {
+        "command": [
+          "python",
+          "-m",
+          "pytest",
+          "-q"
+        ],
+        "exit_code": 0,
+        "passed": true,
+        "stderr": "",
+        "stdout": "..                                                                       [100%]\n2 passed in 0.06s\n"
+      },
+      "input_tokens": 25921,
+      "knowledge_error": false,
+      "mode": "memory_skill",
+      "modified_after_run": true,
+      "output_tokens": 2688,
+      "project_id": "memory_skill-r1-repo_c_negative",
+      "project_status": "candidate_complete",
+      "referenced_memory_ids": [],
+      "referenced_skill_ids": [],
+      "repeat": 1,
+      "repository": "/mnt/d/Python-Program/Long-Running-Coding-Agent/examples/knowledge_transfer/repo_c_negative",
+      "reset_exit_code": 0,
+      "role": "negative_transfer",
+      "session_count": 1,
+      "tool_call_count": 9,
+      "total_tokens": 28609,
+      "wall_time_seconds": 70.8582117190017
+    }
+  ],
+  "results": [
+    {
+      "active_memory_count": 3,
+      "active_skill_count": 0,
+      "case_count": 4,
+      "episode_count": 4,
+      "input_tokens": 123319,
+      "knowledge_error_count": 0,
+      "memory_exposure_count": 1,
+      "memory_harmful_count": 0,
+      "memory_helpful_count": 0,
+      "memory_reference_count": 0,
+      "memory_retrieval_count": 1,
+      "memory_retrieval_hit_rate": 0.5,
+      "mode": "memory_skill",
+      "negative_transfer_count": 0,
+      "output_tokens": 7265,
+      "positive_transfer_success_rate": 1.0,
+      "project_count": 4,
+      "quarantined_memory_count": 0,
+      "reflection_candidate_count": 3,
+      "repeat": 1,
+      "session_count": 4,
+      "skill_exposure_count": 0,
+      "skill_harmful_count": 0,
+      "skill_helpful_count": 0,
+      "skill_reference_count": 0,
+      "skill_retrieval_count": 0,
+      "skill_retrieval_hit_rate": 0.0,
+      "tool_call_count": 44,
+      "total_tokens": 130584,
+      "validated_skill_count": 2,
+      "verification_success_rate": 1.0,
+      "wall_time_seconds": 234.1165582350004
+    }
+  ],
+  "seed": 7
+}

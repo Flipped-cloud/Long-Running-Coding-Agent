@@ -36,6 +36,7 @@ flowchart TD
 - CLI entry points for running the agent and listing tools.
 - A toy calculator repository that the fake provider can repair.
 - v0.2 project orchestration with external task state, coarse planning, deterministic task selection, as-needed decomposition, bounded recovery candidate selection, and resume.
+- v0.4 evidence-grounded episodic memory and verified procedural skills, gated by deterministic evidence and exposed through explicit knowledge-use telemetry.
 
 ## v0.2 State-Grounded Adaptive Planning
 
@@ -87,6 +88,52 @@ Planning modes:
 - `static`: initial plan, no failure decomposition.
 - `adaptive`: initial plan plus decomposition when needed.
 - `adaptive_search`: adaptive mode plus bounded recovery candidates.
+
+## v0.4 Evidence-Grounded Knowledge
+
+v0.4 adds a separate knowledge layer. It does not let the model write memories directly into project state, and it does not auto-execute learned skills. Sessions produce deterministic evidence packs from observed tool traces; reflection candidates must cite evidence IDs before they can become active memories. Skills are promoted only after verified successful runs.
+
+```mermaid
+flowchart TD
+    Session["Project Session"] --> Trace["SessionTrace"]
+    Trace --> Episode["Experience Evidence Pack"]
+    Episode --> Store["KnowledgeStore"]
+    Episode --> Reflection["Reflection Candidate"]
+    Reflection --> Gate["Evidence Gate"]
+    Gate --> Memory["Active / Quarantined Memory"]
+    Episode --> Skill["Validated Skill Candidate"]
+    Memory --> Retrieval["Deterministic Retrieval"]
+    Skill --> Retrieval
+    Retrieval --> Context["Budgeted Context Injection"]
+    Context --> Session
+    Session --> Use["report_knowledge_use"]
+    Use --> Store
+```
+
+Knowledge modes:
+
+- `disabled`: no knowledge capture or retrieval.
+- `raw_episode`: save evidence episodes only.
+- `reflection`: save reflection candidates, but do not activate memories.
+- `verified_memory`: activate memories only after evidence gating.
+- `memory_skill`: verified memory plus validated procedural skills.
+
+Knowledge artifacts are stored outside the workspace root under `.runs/knowledge/`; per-project evidence episodes are stored under `.runs/projects/<project_id>/knowledge/episodes/`.
+
+Useful commands:
+
+```bash
+longrun-agent knowledge memories list --config configs/knowledge_verified_memory.yaml
+longrun-agent knowledge memories show <memory-id> --config configs/knowledge_verified_memory.yaml
+longrun-agent knowledge memories invalidate <memory-id> --config configs/knowledge_verified_memory.yaml
+
+longrun-agent knowledge skills list --config configs/knowledge_memory_skill.yaml
+longrun-agent knowledge skills show <skill-id> --config configs/knowledge_memory_skill.yaml
+longrun-agent knowledge skills deprecate <skill-id> --config configs/knowledge_memory_skill.yaml
+
+longrun-agent knowledge retrieval explain --config configs/knowledge_memory_skill.yaml --task "fix pytest validation"
+longrun-agent eval experience-learning --config evals/experience_learning/config.yaml
+```
 
 ## Install
 

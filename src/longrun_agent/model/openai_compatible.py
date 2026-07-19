@@ -97,6 +97,7 @@ class OpenAICompatibleProvider(ModelProvider):
                 "total_tokens": int(getattr(usage_obj, "total_tokens", 0) or 0),
             }
         tool_calls = getattr(message, "tool_calls", None) or []
+        finish_reason = getattr(choice, "finish_reason", None)
         if tool_calls:
             calls: list[ToolCall] = []
             raw_tool_calls = []
@@ -118,11 +119,17 @@ class OpenAICompatibleProvider(ModelProvider):
                 tool_calls=calls,
                 usage=usage,
                 provider_request_id=getattr(response, "id", None),
-                raw_metadata={"message": {"role": "assistant", "content": getattr(message, "content", None), "tool_calls": raw_tool_calls}},
+                raw_metadata={
+                    "finish_reason": finish_reason,
+                    "message": {"role": "assistant", "content": getattr(message, "content", None), "tool_calls": raw_tool_calls},
+                },
             )
         return ModelResponse(
             final_answer=FinalAnswer(content=getattr(message, "content", "") or ""),
             usage=usage,
             provider_request_id=getattr(response, "id", None),
-            raw_metadata={"message": {"role": "assistant", "content": getattr(message, "content", "") or ""}},
+            raw_metadata={
+                "finish_reason": finish_reason,
+                "message": {"role": "assistant", "content": getattr(message, "content", "") or ""},
+            },
         )

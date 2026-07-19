@@ -110,6 +110,9 @@ class AgentLoop:
         terminal_grace_turn_count = 0
         terminal_signal_recovered = False
         tool_argument_protocol_retry_count = 0
+        protocol_error_count = 0
+        recoverable_protocol_error_count = 0
+        provider_error_count = 0
         session_deadline = time.monotonic() + self.config.agent.max_session_seconds
         if deadline_monotonic is not None:
             session_deadline = min(session_deadline, deadline_monotonic)
@@ -137,7 +140,13 @@ class AgentLoop:
                 )
             if require_external_terminal and remaining == 1:
                 terminal_tools_only = True
-                if completion_evidence is not None and completion_evidence():
+                if self._knowledge_decision_pending():
+                    context_buffer.add_user_reminder(
+                        "Final model turn: retrieved knowledge is awaiting a Knowledge Decision. "
+                        "First call report_knowledge_use with referenced IDs, or empty ID lists and a reason if none were used. "
+                        "Then call request_task_completion if the acceptance criteria are satisfied, otherwise call report_blocker."
+                    )
+                elif completion_evidence is not None and completion_evidence():
                     context_buffer.add_user_reminder(
                         "Final model turn: implementation and verification evidence already exists. Only call request_task_completion if the acceptance criteria are satisfied, otherwise call report_blocker with the exact remaining issue. Do not run more tools."
                     )
@@ -182,10 +191,12 @@ class AgentLoop:
             if protocol_failed:
                 status = RunStatus.PROTOCOL_ERROR
                 consecutive_errors += 1
+                protocol_error_count += 1
                 break
             if response is None:
                 status = RunStatus.PROVIDER_ERROR
                 consecutive_errors += 1
+                provider_error_count += 1
                 break
 
             usage_input, usage_output = _split_usage(response.usage)
@@ -222,6 +233,7 @@ class AgentLoop:
                         error_type=ErrorType.PROTOCOL.value,
                         error_message="Project Session requires request_task_completion, report_blocker, or request_decomposition",
                     )
+                    protocol_error_count += 1
                     context_buffer.add_protocol_correction(
                         "FinalAnswer does not change Project Task state. Call exactly one terminal control tool: request_task_completion, report_blocker, or request_decomposition."
                     )
@@ -239,14 +251,17 @@ class AgentLoop:
                     error_type=ErrorType.PROTOCOL.value,
                     error_message="model response had no tool calls or final answer",
                 )
+                protocol_error_count += 1
                 if consecutive_errors >= self.config.agent.max_consecutive_errors:
                     status = RunStatus.ABORTED
                     break
                 context_buffer.add_protocol_correction("Return valid tool calls or a final answer.")
                 continue
 
-            context_buffer.add_assistant_tool_turn(self._assistant_tool_message(response), step=step)
-            for call in response.tool_calls:
+            ordered_calls = self._ordered_tool_calls(response.tool_calls)
+            ordered_response = response.model_copy(update={"tool_calls": ordered_calls})
+            context_buffer.add_assistant_tool_turn(self._assistant_tool_message(ordered_response), step=step)
+            for call in ordered_calls:
                 tool_count += 1
                 logger.log(
                     step,
@@ -260,8 +275,14 @@ class AgentLoop:
                 result = self.router.execute(call, context)
                 if result.success:
                     consecutive_errors = 0
-                elif result.error_type != ErrorType.ENVIRONMENT:
+                elif result.error_type not in {ErrorType.ENVIRONMENT, ErrorType.POLICY_GATE}:
                     consecutive_errors += 1
+                if result.error_type == ErrorType.PROTOCOL:
+                    protocol_error_count += 1
+                    if result.metadata.get("unsupported_shell_syntax"):
+                        recoverable_protocol_error_count += 1
+                elif result.error_type == ErrorType.PROVIDER:
+                    provider_error_count += 1
                 logger.log(
                     step,
                     "tool_finished",
@@ -317,9 +338,7 @@ class AgentLoop:
                 grace_step = self.config.agent.max_steps + grace_index
                 logger.log(grace_step, "terminal_grace_turn_started", action_type="model", payload={"grace_index": grace_index})
                 self._emit("terminal_grace_turn_started", {"step": grace_step, "grace_index": grace_index})
-                context_buffer.add_user_reminder(
-                    "Verification evidence is complete. A completion candidate has been generated. Confirm completion by calling request_task_completion. Otherwise call report_blocker with the exact remaining issue. Do not perform more exploration."
-                )
+                context_buffer.add_user_reminder(self._terminal_grace_reminder())
                 tools_for_request = self._schemas(terminal_tools_only=True)
                 preparation = context_manager.prepare(context_buffer, tools_for_request, step=grace_step)
                 if preparation.action == ContextPreparationAction.BUDGET_EXHAUSTED:
@@ -336,9 +355,11 @@ class AgentLoop:
                 tool_argument_protocol_retry_count += retry_count
                 if protocol_failed:
                     status = RunStatus.PROTOCOL_ERROR
+                    protocol_error_count += 1
                     break
                 if response is None:
                     status = RunStatus.PROVIDER_ERROR
+                    provider_error_count += 1
                     break
                 usage_input, usage_output = _split_usage(response.usage)
                 total_tokens += int(response.usage.get("total_tokens", usage_input + usage_output))
@@ -354,8 +375,10 @@ class AgentLoop:
                 )
                 self._emit("model_response", {"step": grace_step, "kind": response.kind, "usage": response.usage})
                 if response.tool_calls:
-                    context_buffer.add_assistant_tool_turn(self._assistant_tool_message(response), step=grace_step)
-                    for call in response.tool_calls:
+                    ordered_calls = self._ordered_tool_calls(response.tool_calls)
+                    ordered_response = response.model_copy(update={"tool_calls": ordered_calls})
+                    context_buffer.add_assistant_tool_turn(self._assistant_tool_message(ordered_response), step=grace_step)
+                    for call in ordered_calls:
                         tool_count += 1
                         logger.log(
                             grace_step,
@@ -366,6 +389,12 @@ class AgentLoop:
                             sanitized_arguments=call.arguments,
                         )
                         result = self.router.execute(call, context)
+                        if result.error_type == ErrorType.PROTOCOL:
+                            protocol_error_count += 1
+                            if result.metadata.get("unsupported_shell_syntax"):
+                                recoverable_protocol_error_count += 1
+                        elif result.error_type == ErrorType.PROVIDER:
+                            provider_error_count += 1
                         logger.log(
                             grace_step,
                             "tool_finished",
@@ -411,6 +440,11 @@ class AgentLoop:
         ):
             status = RunStatus.TERMINAL_SIGNAL_MISSING
 
+        if terminal_signal_recovered and seen_final_without_signal:
+            recoverable_protocol_error_count += 1
+        if tool_argument_protocol_retry_count and status != RunStatus.PROTOCOL_ERROR:
+            recoverable_protocol_error_count += tool_argument_protocol_retry_count
+
         finished_at = datetime.now(UTC).isoformat()
         context_metrics = context_manager.metrics(context_buffer)
         total_tokens = (
@@ -436,6 +470,11 @@ class AgentLoop:
             terminal_grace_turn_count=terminal_grace_turn_count,
             terminal_signal_recovered=terminal_signal_recovered,
             tool_argument_protocol_retry_count=tool_argument_protocol_retry_count,
+            unsupported_shell_syntax_count=getattr(getattr(self.router, "trace", None), "unsupported_shell_syntax_count", 0),
+            protocol_error_count=protocol_error_count,
+            recoverable_protocol_error_count=recoverable_protocol_error_count,
+            fatal_protocol_error_count=1 if status == RunStatus.PROTOCOL_ERROR else 0,
+            provider_error_count=provider_error_count,
             **context_metrics,
         )
         logger.log(
@@ -532,8 +571,29 @@ class AgentLoop:
         schemas = self.router.schemas()
         if not terminal_tools_only:
             return schemas
-        allowed = {"request_task_completion", "report_blocker"}
+        allowed = {"request_task_completion", "report_blocker", "report_knowledge_use"}
         return [schema for schema in schemas if schema.get("function", {}).get("name") in allowed]
+
+    def _terminal_grace_reminder(self) -> str:
+        if self._knowledge_decision_pending():
+            return (
+                "Verification evidence is complete and retrieved knowledge is still awaiting a Knowledge Decision. "
+                "First call report_knowledge_use with referenced IDs, or empty ID lists and a reason if none were used. "
+                "Then call request_task_completion if the acceptance criteria are satisfied, otherwise call report_blocker."
+            )
+        return (
+            "Verification evidence is complete. A completion candidate has been generated. "
+            "Confirm completion by calling request_task_completion. Otherwise call report_blocker with the exact remaining issue. "
+            "Do not perform more exploration."
+        )
+
+    def _knowledge_decision_pending(self) -> bool:
+        pending = getattr(self.router, "knowledge_decision_pending", None)
+        return bool(pending and pending())
+
+    @staticmethod
+    def _ordered_tool_calls(tool_calls):
+        return sorted(tool_calls, key=lambda call: 0 if call.name == "report_knowledge_use" else 1)
 
     @staticmethod
     def _assistant_tool_message(response: ModelResponse) -> dict[str, Any]:

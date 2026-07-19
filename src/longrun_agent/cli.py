@@ -8,6 +8,12 @@ from rich.console import Console
 
 from longrun_agent.agent.loop import AgentLoop, default_router
 from longrun_agent.config import load_config
+from longrun_agent.exceptions import ConfigurationError
+from longrun_agent.knowledge.evidence import RepositoryProfiler
+from longrun_agent.knowledge.renderer import render_bundle
+from longrun_agent.knowledge.retrieval import retrieve_bundle
+from longrun_agent.knowledge.schema import KnowledgeRetrievalQuery, MemoryStatus, SkillStatus
+from longrun_agent.knowledge.store import KnowledgeStore
 from longrun_agent.model.fake import FakeModelProvider, default_calculator_script
 from longrun_agent.model.openai_compatible import OpenAICompatibleProvider
 from longrun_agent.orchestration.orchestrator import ProjectOrchestrator
@@ -20,9 +26,17 @@ app = typer.Typer(add_completion=False)
 project_app = typer.Typer(add_completion=False)
 context_app = typer.Typer(add_completion=False)
 eval_app = typer.Typer(add_completion=False)
+knowledge_app = typer.Typer(add_completion=False)
+knowledge_memories_app = typer.Typer(add_completion=False)
+knowledge_skills_app = typer.Typer(add_completion=False)
+knowledge_retrieval_app = typer.Typer(add_completion=False)
 app.add_typer(project_app, name="project")
 app.add_typer(context_app, name="context")
 app.add_typer(eval_app, name="eval")
+app.add_typer(knowledge_app, name="knowledge")
+knowledge_app.add_typer(knowledge_memories_app, name="memories")
+knowledge_app.add_typer(knowledge_skills_app, name="skills")
+knowledge_app.add_typer(knowledge_retrieval_app, name="retrieval")
 console = Console()
 
 
@@ -145,6 +159,41 @@ def _store(config_path: Path) -> tuple[ProjectStateStore, object]:
     return ProjectStateStore(app_config.state.root, workspace_root=app_config.workspace.root), app_config
 
 
+def _knowledge_store(config_path: Path) -> tuple[KnowledgeStore, object]:
+    app_config = load_config(config_path)
+    return (
+        KnowledgeStore(
+            app_config.knowledge.root,
+            workspace_root=app_config.workspace.root,
+            atomic_write=app_config.state.atomic_write,
+            record_mutation_policy=app_config.knowledge.record_mutation_policy,
+        ),
+        app_config,
+    )
+
+
+def _memory_status_filter(status: str | None) -> dict[str, object] | None:
+    if status is None:
+        return None
+    try:
+        parsed_status = MemoryStatus(status)
+    except ValueError as exc:
+        allowed = ", ".join(item.value for item in MemoryStatus)
+        raise typer.BadParameter(f"invalid memory status '{status}'; expected one of: {allowed}") from exc
+    return {"status": parsed_status.value}
+
+
+def _skill_status_filter(status: str | None) -> dict[str, object] | None:
+    if status is None:
+        return None
+    try:
+        parsed_status = SkillStatus(status)
+    except ValueError as exc:
+        allowed = ", ".join(item.value for item in SkillStatus)
+        raise typer.BadParameter(f"invalid skill status '{status}'; expected one of: {allowed}") from exc
+    return {"status": parsed_status.value}
+
+
 @project_app.command("status")
 def project_status(
     config: Path = typer.Option(Path("configs/planning_static.yaml"), exists=True, file_okay=True, dir_okay=False),
@@ -193,6 +242,137 @@ def project_metrics(
         state = store.load(project_id)
         store.write_metrics(project_id, project_statistics(state, store.read_sessions(project_id)))
     console.print_json(path.read_text(encoding="utf-8"))
+
+
+@knowledge_memories_app.command("list")
+def knowledge_memories_list(
+    config: Path = typer.Option(Path("configs/knowledge_verified_memory.yaml"), exists=True, file_okay=True, dir_okay=False),
+    status: str | None = typer.Option(None, help="Filter by memory status."),
+) -> None:
+    store, _app_config = _knowledge_store(config)
+    records = store.list_memories(_memory_status_filter(status))
+    payload = [
+        {
+            "memory_id": record.memory_id,
+            "status": record.status.value,
+            "scope": record.scope.value,
+            "kind": record.kind.value,
+            "title": record.title,
+            "confidence": record.confidence,
+            "source_episode_ids": record.source_episode_ids,
+        }
+        for record in records
+    ]
+    console.print_json(json.dumps(payload))
+
+
+@knowledge_memories_app.command("show")
+def knowledge_memories_show(
+    memory_id: str,
+    config: Path = typer.Option(Path("configs/knowledge_verified_memory.yaml"), exists=True, file_okay=True, dir_okay=False),
+) -> None:
+    store, _app_config = _knowledge_store(config)
+    try:
+        record = store.load_memory(memory_id)
+    except FileNotFoundError as exc:
+        raise typer.BadParameter(f"memory not found: {memory_id}", param_hint="memory_id") from exc
+    console.print_json(record.model_dump_json())
+
+
+@knowledge_memories_app.command("invalidate")
+def knowledge_memories_invalidate(
+    memory_id: str,
+    config: Path = typer.Option(Path("configs/knowledge_verified_memory.yaml"), exists=True, file_okay=True, dir_okay=False),
+    reason: str = typer.Option("manually updated through CLI", help="Reason for the status change."),
+) -> None:
+    store, _app_config = _knowledge_store(config)
+    try:
+        record = store.update_memory_status(memory_id, MemoryStatus.INVALIDATED, reason=reason)
+    except FileNotFoundError as exc:
+        raise typer.BadParameter(f"memory not found: {memory_id}", param_hint="memory_id") from exc
+    console.print_json(record.model_dump_json())
+
+
+@knowledge_skills_app.command("list")
+def knowledge_skills_list(
+    config: Path = typer.Option(Path("configs/knowledge_memory_skill.yaml"), exists=True, file_okay=True, dir_okay=False),
+    status: str | None = typer.Option(None, help="Filter by skill status."),
+) -> None:
+    store, _app_config = _knowledge_store(config)
+    records = store.list_skills(_skill_status_filter(status))
+    payload = [
+        {
+            "skill_id": record.skill_id,
+            "status": record.status.value,
+            "title": record.title,
+            "version": record.version,
+            "success_count": record.success_count,
+            "failure_count": record.failure_count,
+            "source_episode_ids": record.source_episode_ids,
+            "source_task_ids": record.source_task_ids,
+        }
+        for record in records
+    ]
+    console.print_json(json.dumps(payload))
+
+
+@knowledge_skills_app.command("show")
+def knowledge_skills_show(
+    skill_id: str,
+    config: Path = typer.Option(Path("configs/knowledge_memory_skill.yaml"), exists=True, file_okay=True, dir_okay=False),
+) -> None:
+    store, _app_config = _knowledge_store(config)
+    try:
+        record = store.load_skill(skill_id)
+    except FileNotFoundError as exc:
+        raise typer.BadParameter(f"skill not found: {skill_id}", param_hint="skill_id") from exc
+    console.print_json(record.model_dump_json())
+
+
+@knowledge_skills_app.command("deprecate")
+def knowledge_skills_deprecate(
+    skill_id: str,
+    config: Path = typer.Option(Path("configs/knowledge_memory_skill.yaml"), exists=True, file_okay=True, dir_okay=False),
+    reason: str = typer.Option("manually updated through CLI", help="Reason for the status change."),
+) -> None:
+    store, _app_config = _knowledge_store(config)
+    try:
+        record = store.update_skill_status(skill_id, SkillStatus.DEPRECATED, reason=reason)
+    except FileNotFoundError as exc:
+        raise typer.BadParameter(f"skill not found: {skill_id}", param_hint="skill_id") from exc
+    console.print_json(record.model_dump_json())
+
+
+@knowledge_retrieval_app.command("explain")
+def knowledge_retrieval_explain(
+    task: str = typer.Option(..., help="Task objective to explain retrieval for."),
+    config: Path = typer.Option(Path("configs/knowledge_memory_skill.yaml"), exists=True, file_okay=True, dir_okay=False),
+    project_id: str | None = typer.Option(None),
+) -> None:
+    if not task.strip():
+        raise typer.BadParameter("task must not be empty")
+    store, app_config = _knowledge_store(config)
+    profile = RepositoryProfiler(app_config.workspace.root).profile()
+    query = KnowledgeRetrievalQuery(
+        task_objective=task,
+        acceptance_criteria=[],
+        repository_fingerprint=profile.repository_fingerprint,
+        language_tags=profile.language_tags,
+        framework_tags=profile.framework_tags,
+        tool_tags=profile.tool_tags,
+        project_id=project_id,
+    )
+    bundle, scores = retrieve_bundle(app_config.knowledge, store, query)
+    rendered, estimated_tokens = render_bundle(bundle, app_config.knowledge)
+    payload = {
+        "retrieval_id": bundle.retrieval_id,
+        "estimated_tokens": estimated_tokens,
+        "memory_ids": [record.memory_id for record in bundle.memories],
+        "skill_ids": [record.skill_id for record in bundle.skills],
+        "scores": [score.model_dump(mode="json") for score in scores],
+        "rendered_context": rendered,
+    }
+    console.print_json(json.dumps(payload))
 
 
 @context_app.command("inspect")
@@ -264,6 +444,24 @@ def eval_context(
         dry_run=dry_run,
         fake_provider_script=fake_provider_script,
     )
+    console.print_json(json.dumps(result))
+
+
+@eval_app.command("experience-learning")
+def eval_experience_learning(
+    config: Path = typer.Option(Path("evals/experience_learning/config.yaml"), exists=True, file_okay=True, dir_okay=False),
+    backend: str | None = typer.Option(None),
+    mode: str | None = typer.Option(None),
+    repeat: int | None = typer.Option(None),
+    dry_run: bool = typer.Option(False),
+) -> None:
+    from longrun_agent.evals.experience_learning.runner import run_experience_learning
+
+    try:
+        result = run_experience_learning(config, backend=backend, mode=mode, repeat=repeat, dry_run=dry_run)
+    except ConfigurationError as exc:
+        typer.echo(f"configuration error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
     console.print_json(json.dumps(result))
 
 

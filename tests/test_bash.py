@@ -7,17 +7,41 @@ from longrun_agent.tools.bash import BashTool
 from longrun_agent.tools.router import ToolRouter
 
 
-def context(tmp_path: Path, max_output_chars: int = 12000) -> ToolContext:
+def context(
+    tmp_path: Path,
+    max_output_chars: int = 12000,
+    bash_timeout_seconds: int = 2,
+) -> ToolContext:
     artifacts = tmp_path / ".runs" / "r1" / "artifacts"
     artifacts.mkdir(parents=True)
+
     return ToolContext(
-        workspace=tmp_path, artifacts_dir=artifacts, config=ToolsConfig(max_output_chars=max_output_chars, bash_timeout_seconds=2)
+        workspace=tmp_path,
+        artifacts_dir=artifacts,
+        config=ToolsConfig(
+            max_output_chars=max_output_chars,
+            bash_timeout_seconds=bash_timeout_seconds,
+        ),
     )
 
 
-def execute(tmp_path: Path, args: dict, max_output_chars: int = 12000):
+def execute(
+    tmp_path: Path,
+    args: dict,
+    max_output_chars: int = 12000,
+    bash_timeout_seconds: int = 2,
+):
     return ToolRouter([BashTool()]).execute(
-        AgentToolCall(call_id="c1", tool_name="bash", arguments=args), context(tmp_path, max_output_chars)
+        AgentToolCall(
+            call_id="c1",
+            tool_name="bash",
+            arguments=args,
+        ),
+        context(
+            tmp_path,
+            max_output_chars,
+            bash_timeout_seconds,
+        ),
     )
 
 
@@ -35,7 +59,14 @@ def test_bash_nonzero_exit_is_observation(tmp_path: Path):
 
 
 def test_bash_timeout(tmp_path: Path):
-    result = execute(tmp_path, {"command": 'python -c "import time; time.sleep(5)"', "timeout": 1})
+    result = execute(
+        tmp_path,
+        {
+            "command": 'python -c "import time; time.sleep(5)"',
+            "timeout": 1,
+        },
+    )
+
     assert not result.success
     assert result.metadata["timed_out"] is True
 
@@ -54,9 +85,21 @@ def test_bash_dangerous_command_rejected(tmp_path: Path):
 
 
 def test_bash_argv_pytest_with_cwd_dot(tmp_path: Path):
-    (tmp_path / "test_sample.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
-    result = execute(tmp_path, {"argv": ["python", "-m", "pytest", "-q"], "cwd": "."})
-    assert result.success
+    (tmp_path / "test_sample.py").write_text(
+        "def test_ok():\n    assert True\n",
+        encoding="utf-8",
+    )
+
+    result = execute(
+        tmp_path,
+        {
+            "argv": ["python", "-m", "pytest", "-q"],
+            "cwd": ".",
+        },
+        bash_timeout_seconds=10,
+    )
+
+    assert result.success, f"command failed: error_message={result.error_message}, metadata={result.metadata}, output={result.output}"
     assert result.metadata["exit_code"] == 0
     assert "1 passed" in result.output
 
@@ -74,6 +117,13 @@ def test_bash_rejects_cd_and_shell_operators_without_executing_cd(tmp_path: Path
     assert result.error_type.value == "protocol_error"
     assert result.metadata["unsupported_shell_syntax"] is True
     assert "Use argv" in result.output
+
+
+def test_bash_tool_description_prefers_argv_examples():
+    description = BashTool().openai_schema()["function"]["description"]
+    assert '"argv": ["find", ".", "-type", "f"]' in description
+    assert '"argv": ["python", "-m", "pytest", "-q"]' in description
+    assert "do not use cd" in description
 
 
 def test_bash_dangerous_absolute_delete_still_rejected(tmp_path: Path):

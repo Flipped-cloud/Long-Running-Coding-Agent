@@ -122,7 +122,12 @@ def _truncate_stream(name: str, value: str, limit: int) -> tuple[str, bool]:
 
 class BashTool(BaseTool):
     name = "bash"
-    description = "Run a command inside the workspace with timeout and output capture."
+    description = (
+        "Run one command inside the workspace with timeout and output capture. Prefer argv, for example "
+        '{"argv": ["find", ".", "-type", "f"], "cwd": "."} or '
+        '{"argv": ["python", "-m", "pytest", "-q"], "cwd": "."}. '
+        "Commands already run in cwd; do not use cd, pipes, redirection, &&, ||, semicolons, or shell built-ins."
+    )
     args_model = BashArgs
 
     def execute(self, call_id: str, arguments: BashArgs, context: ToolContext) -> ToolResult:

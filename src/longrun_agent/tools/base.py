@@ -18,6 +18,7 @@ class ToolContext:
         config: ToolsConfig | None = None,
         artifacts_dir: Path | None = None,
         control_channel: Any | None = None,
+        knowledge_channel: Any | None = None,
     ):
         artifacts = artifacts_dir or tool_outputs_dir or workspace / ".runs" / "tool_outputs"
         self.workspace = workspace
@@ -25,6 +26,7 @@ class ToolContext:
         self.diffs_dir = diffs_dir or artifacts
         self.config = config or ToolsConfig()
         self.control_channel = control_channel
+        self.knowledge_channel = knowledge_channel
         self.tool_outputs_dir.mkdir(parents=True, exist_ok=True)
         self.diffs_dir.mkdir(parents=True, exist_ok=True)
 

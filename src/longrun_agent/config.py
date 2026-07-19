@@ -139,6 +139,102 @@ class ContextConfig(BaseModel):
         return self
 
 
+class KnowledgeEpisodeConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    save_all_sessions: bool = True
+    max_evidence_items: int = Field(default=40, ge=1)
+
+
+class KnowledgeReflectionConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    trigger_on_blocked: bool = True
+    trigger_on_no_progress: bool = True
+    trigger_on_failed: bool = True
+    trigger_on_decomposition: bool = True
+    trigger_on_provider_error: bool = False
+    trigger_on_context_reset: bool = False
+    max_protocol_retries: int = Field(default=2, ge=0)
+    minimum_evidence_items: int = Field(default=1, ge=0)
+    minimum_confidence: float = Field(default=0.65, ge=0, le=1)
+
+
+class KnowledgeMemoryConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    max_active_records: int = Field(default=500, ge=0)
+    max_retrieved: int = Field(default=4, ge=0)
+    max_context_tokens: int = Field(default=1800, ge=0)
+    minimum_retrieval_score: float = Field(default=0.25, ge=0)
+    default_scope: Literal["task", "project", "repository", "portable"] = "repository"
+    expire_after_days: int | None = Field(default=None, ge=1)
+
+
+class KnowledgeSkillConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    max_retrieved: int = Field(default=3, ge=0)
+    max_context_tokens: int = Field(default=2200, ge=0)
+    promotion_min_successes: int = Field(default=2, ge=1)
+    promotion_min_distinct_tasks: int = Field(default=2, ge=1)
+    promotion_min_distinct_repositories: int = Field(default=1, ge=1)
+    portable_minimum_semantic_score: float = Field(default=0.25, ge=0, le=1)
+    anti_condition_match_threshold: float = Field(default=0.75, ge=0, le=1)
+    minimum_candidate_confidence: float = Field(default=0.65, ge=0, le=1)
+    require_active_helpful_source_for_candidate: bool = False
+    allow_code_template: bool = False
+    auto_execute: bool = False
+
+    @model_validator(mode="after")
+    def validate_non_executable_v04(self) -> KnowledgeSkillConfig:
+        if self.auto_execute:
+            raise ValueError("knowledge.skill.auto_execute must be false in v0.4")
+        return self
+
+
+class KnowledgeRetrievalConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lexical_weight: float = Field(default=0.35, ge=0)
+    tag_weight: float = Field(default=0.20, ge=0)
+    scope_weight: float = Field(default=0.15, ge=0)
+    evidence_weight: float = Field(default=0.15, ge=0)
+    utility_weight: float = Field(default=0.10, ge=0)
+    freshness_weight: float = Field(default=0.05, ge=0)
+    conflict_penalty: float = Field(default=0.50, ge=0)
+
+    @model_validator(mode="after")
+    def validate_some_signal(self) -> KnowledgeRetrievalConfig:
+        weights = [
+            self.lexical_weight,
+            self.tag_weight,
+            self.scope_weight,
+            self.evidence_weight,
+            self.utility_weight,
+            self.freshness_weight,
+        ]
+        if not any(weight > 0 for weight in weights):
+            raise ValueError("at least one positive knowledge retrieval weight is required")
+        return self
+
+
+class KnowledgeConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["disabled", "raw_episode", "reflection", "verified_memory", "memory_skill"] = "disabled"
+    root: Path = Path(".runs/knowledge")
+    strict_errors: bool = False
+    record_mutation_policy: Literal["read_write", "frozen_records"] = "read_write"
+    episode: KnowledgeEpisodeConfig = Field(default_factory=KnowledgeEpisodeConfig)
+    reflection: KnowledgeReflectionConfig = Field(default_factory=KnowledgeReflectionConfig)
+    memory: KnowledgeMemoryConfig = Field(default_factory=KnowledgeMemoryConfig)
+    skill: KnowledgeSkillConfig = Field(default_factory=KnowledgeSkillConfig)
+    retrieval: KnowledgeRetrievalConfig = Field(default_factory=KnowledgeRetrievalConfig)
+
+
 class ToolsConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -254,6 +350,7 @@ class AppConfig(BaseModel):
     planning: PlanningConfig = Field(default_factory=PlanningConfig)
     state: StateConfig = Field(default_factory=StateConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
+    knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     config_dir: Path = Field(default=Path("."), exclude=True)
 
     @model_validator(mode="after")
@@ -265,6 +362,8 @@ class AppConfig(BaseModel):
             self.telemetry.run_root = (base / self.telemetry.run_root).resolve()
         if not self.state.root.is_absolute():
             self.state.root = (base / self.state.root).resolve()
+        if not self.knowledge.root.is_absolute():
+            self.knowledge.root = (base / self.knowledge.root).resolve()
         if self.planning.initial_plan.plan_file is not None and not self.planning.initial_plan.plan_file.is_absolute():
             self.planning.initial_plan.plan_file = (base / self.planning.initial_plan.plan_file).resolve()
         return self

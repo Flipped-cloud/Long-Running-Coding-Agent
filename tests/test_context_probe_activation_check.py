@@ -1,6 +1,14 @@
+import importlib.util
 import json
+from pathlib import Path
 
-from evals.context_lifecycle.activation_check import activation_passed, build_activation_report
+_ACTIVATION_CHECK_PATH = Path(__file__).resolve().parents[1] / "evals" / "context_lifecycle" / "activation_check.py"
+_SPEC = importlib.util.spec_from_file_location("context_lifecycle_activation_check", _ACTIVATION_CHECK_PATH)
+assert _SPEC is not None and _SPEC.loader is not None
+_MODULE = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_MODULE)
+activation_passed = _MODULE.activation_passed
+build_activation_report = _MODULE.build_activation_report
 
 
 def test_activation_check_reports_all_modes(tmp_path):

@@ -1,0 +1,65 @@
+seed: 7
+backend: api
+repeats: 1
+output_root: ../../.runs/experience_api_pilot
+fail_fast_on_knowledge_error: true
+
+modes:
+  - disabled
+  - verified_memory
+  - memory_skill
+
+cases:
+  - case_id: repo_a_learn
+    knowledge_phase: bootstrap_learning
+    repository: ../../examples/knowledge_transfer/repo_a
+    task_file: TASK_LEARN.md
+    reset_script: reset_repo.py
+    role: learning_probe
+    initial_verification_should_pass: false
+    final_verification_should_pass: false
+
+  - case_id: repo_a_reuse
+    knowledge_phase: bootstrap_consolidation
+    repository: ../../examples/knowledge_transfer/repo_a
+    task_file: TASK_FIX.md
+    reset_script: reset_repo.py
+    role: same_repository_reuse
+    initial_verification_should_pass: false
+    final_verification_should_pass: true
+
+  - case_id: repo_b_transfer
+    knowledge_phase: frozen_transfer
+    repository: ../../examples/knowledge_transfer/repo_b
+    task_file: TASK.md
+    reset_script: reset_repo.py
+    role: positive_transfer
+    initial_verification_should_pass: false
+    final_verification_should_pass: true
+
+  - case_id: repo_c_negative
+    knowledge_phase: frozen_negative_control
+    repository: ../../examples/knowledge_transfer/repo_c_negative
+    task_file: TASK.md
+    reset_script: reset_repo.py
+    role: negative_transfer
+    initial_verification_should_pass: true
+    final_verification_should_pass: true
+
+model:
+  provider: openai_compatible
+  model_name: "${MODEL_NAME}"
+  base_url: "${OPENAI_BASE_URL}"
+  api_key_env: OPENAI_API_KEY
+  temperature: 0.0
+  max_output_tokens: 4096
+  request_timeout_seconds: 180
+  max_api_retries: 3
+
+verification:
+  command:
+    - python
+    - -m
+    - pytest
+    - -q
+  timeout_seconds: 30
