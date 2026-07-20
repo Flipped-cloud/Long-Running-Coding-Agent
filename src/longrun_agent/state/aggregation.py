@@ -14,9 +14,31 @@ def aggregate_candidate_complete_parents(state: ProjectState) -> list[str]:
             if task.status != TaskStatus.DECOMPOSED:
                 continue
             children = [candidate for candidate in state.tasks if candidate.parent_id == task.id]
-            if children and all(child.status == TaskStatus.CANDIDATE_COMPLETE for child in children):
+            if children and all(child.status in {TaskStatus.CANDIDATE_COMPLETE, TaskStatus.VERIFIED} for child in children):
                 task.status = TaskStatus.CANDIDATE_COMPLETE
                 task.completion_summary = "All child tasks are candidate complete."
+                task.updated_at = utc_now()
+                changed.append(task.id)
+                updated = True
+        if not updated:
+            break
+    if changed:
+        state.updated_at = utc_now()
+    return changed
+
+
+def aggregate_verified_parents(state: ProjectState) -> list[str]:
+    changed: list[str] = []
+    while True:
+        updated = False
+        for task in state.tasks:
+            if task.status not in {TaskStatus.DECOMPOSED, TaskStatus.CANDIDATE_COMPLETE} or task.verification_contract_id:
+                continue
+            children = [candidate for candidate in state.tasks if candidate.parent_id == task.id]
+            if children and all(child.status == TaskStatus.VERIFIED for child in children):
+                task.status = TaskStatus.VERIFIED
+                task.verification_status = "verified_by_children"
+                task.verified_at = utc_now()
                 task.updated_at = utc_now()
                 changed.append(task.id)
                 updated = True
@@ -66,6 +88,9 @@ def project_statistics(
     return {
         "project_status": state.status.value,
         "candidate_completed_tasks": sum(1 for task in state.tasks if task.status == TaskStatus.CANDIDATE_COMPLETE),
+        "verified_tasks": sum(1 for task in state.tasks if task.status == TaskStatus.VERIFIED),
+        "reopened_tasks": sum(1 for task in state.tasks if task.reopen_count > 0),
+        "verification_attempts": sum(task.verification_attempts for task in state.tasks),
         "blocked_tasks": sum(1 for task in state.tasks if task.status == TaskStatus.BLOCKED),
         "tasks_failed": sum(1 for task in state.tasks if task.status == TaskStatus.FAILED),
         "decomposition_count": sum(1 for revision in state.revisions if revision.trigger == "decomposition"),

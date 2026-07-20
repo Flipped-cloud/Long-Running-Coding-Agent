@@ -1,0 +1,12 @@
+model: {provider: fake, model_name: fake-scripted}
+workspace: {root: ../examples/verification_bench/full_fix}
+planning:
+  mode: static
+  initial_plan: {min_tasks: 1, max_tasks: 1, max_protocol_retries: 2}
+  execution:
+    max_project_sessions: 4
+    max_sessions_per_task: 2
+    max_project_seconds: 180
+    final_verification_command: [python, -m, pytest, -q]
+state: {root: ../.runs/projects, atomic_write: true}
+verification: {mode: legacy_command}

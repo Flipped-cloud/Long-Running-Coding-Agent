@@ -1,12 +1,12 @@
 # longrun-agent
 
-`longrun-agent` is a minimal Coding Agent Runtime for the Baseline Agent Runtime v0.1 stage. It validates the core loop:
+`longrun-agent` is a research-oriented Coding Agent Runtime. It preserves the minimal native-tool loop while adding persistent planning, context lifecycle, evidence-grounded knowledge, contract verification, and offline evaluation through v0.5:
 
 ```text
 model decision -> tool call -> environment execution -> observation -> next model call
 ```
 
-It intentionally does not implement task planning, memory, skills, reflection, handoff, context compaction, verification gates, multi-agent workflows, SWE-bench integration, training, fine-tuning, databases, web services, or any heavyweight agent framework.
+It intentionally avoids heavyweight benchmark infrastructure, model training, web services, and multi-machine orchestration. SWE-bench support is limited to local contract semantics and patch import/export; the full Docker harness is not embedded in the runtime.
 
 ## Architecture
 
@@ -461,3 +461,64 @@ git diff --check
 ## Next Stage
 
 The next topic should be Verification or Memory. Memory, skills, vector retrieval, and multi-agent orchestration remain deliberately excluded from v0.3.
+## v0.5: Contract Verification and Trajectory Evaluation
+
+v0.5 separates an Agent's completion claim from independent acceptance. A `FinalAnswer` is conversational output, a `CompletionCandidate` records public evidence, and only a frozen `VerificationContract` plus a persisted `VerificationReport` can produce `VERIFIED` in contract mode.
+
+### Verification boundaries
+
+- `TaskSpecification` contains the objective, public acceptance criteria, allowed changes, and public check descriptions visible to the Agent.
+- `VerificationContract` is frozen by the harness at project start. It may reference hidden checks and cannot be edited by Agent tools.
+- `EvaluationManifest` expands offline Task x Config x Trial x Seed runs and never enters Agent context.
+- `disabled` preserves completion-candidate behavior; `legacy_command` preserves the single final command; `contract` uses isolated snapshots and authoritative reports.
+
+Resolution checks use SWE-bench-style F2P transitions. Regression checks require P2P. Candidate-only checks must pass on the candidate snapshot. Agent-generated tests use SWT-Bench-style pre/fix transitions: F2P is issue-reproducing, P2P is valid but irrelevant, F2F is unfixed, and P2F is harmful. Generated tests remain non-authoritative.
+
+Hidden assets are stored outside the Agent workspace and injected only into verifier copies. Hidden names, paths, assertions, output, and stack traces are excluded from prompts, handoffs, public events, knowledge records, and final answers. Verification never runs in the Agent workspace.
+
+Integrity verification rejects protected or trusted-test modification, forbidden paths, missing artifacts, contract changes, hidden-asset leakage, unsafe symlinks, excessive deletion, unapproved project configuration edits, misplaced tests, and large binary additions.
+
+Verdicts are `verified`, `partial`, `reopened`, `inconclusive`, `infrastructure_error`, and `contract_invalid`. Verification failure reopens the relevant task; infrastructure failure is not classified as an implementation failure. `CANDIDATE_COMPLETE`, `VERIFICATION_PENDING`, `REOPENED`, and `VERIFIED` remain distinct persisted states.
+
+```mermaid
+flowchart LR
+    A[EvaluationCoordinator] --> B[TaskAdapter]
+    B --> C[ProjectOrchestrator]
+    C --> D[CompletionCandidate]
+    D --> E[VerificationGateway]
+    E --> F[SnapshotManager]
+    F --> G[CheckRunner]
+    G --> H[VerificationReport]
+    H --> I[VERIFIED / REOPENED]
+    I --> J[TrajectoryAnalyzer]
+    J --> K[FailureAttributor]
+    K --> L[AggregateReporter]
+```
+
+### Commands
+
+```bash
+longrun-agent verify contract validate --config configs/contract_verification.yaml
+longrun-agent verify contract show --config configs/contract_verification.yaml --contract-id <id>
+longrun-agent verify run --config configs/contract_verification.yaml --project-id <id>
+longrun-agent verify report --config configs/contract_verification.yaml --project-id <id> --report-id <id>
+
+longrun-agent eval run --manifest evals/system_evaluation/config.yaml
+longrun-agent eval report --evaluation-id local-system-v051-oracle
+longrun-agent eval failures --evaluation-id local-system-v051-oracle --layer verification
+longrun-agent eval review-failure --evaluation-id local-system-v051-oracle --attribution-id <id> --label <failure-code>
+```
+
+### Evaluation semantics
+
+Evaluation records AgentBench-style termination reasons, evidence-derived progress, completion precision, reopen recovery, tokens, tool calls, verification time, generated-test quality, and stability across trials. Failure attribution first identifies the observable symptom, then the earliest evidence-supported causal divergence, retaining event IDs and secondary causes. Deterministic rules are the default; model-assisted attribution is disabled and cannot invent facts.
+
+### Runtime Verification vs Offline Oracle Evaluation
+
+Runtime Verification is part of the experimental condition. It may provide feedback, reopen tasks, consume runtime verifier time, and change later Agent behavior. Offline Oracle Evaluation runs only after the Agent trial has ended, uses the case's frozen contract for every condition, and never changes ProjectState, knowledge, sessions, steps, or Agent context.
+
+Final resolution, F2P, P2P, integrity, and progress metrics come only from the Offline Oracle report. Runtime verdicts and costs remain separate online-behavior metrics. Generated tests remain Runtime evidence and never replace or independently satisfy the Oracle contract.
+
+The local fixtures under `examples/verification_bench/` cover full fixes, partial fixes, regressions, test tampering, generated tests, and infrastructure failures. The system evaluation compares completion-only, legacy-command, contract, and contract-plus-generated-test conditions with isolated workspaces and knowledge stores.
+
+Known limitations: this release provides local adapters and SWE-bench patch import/export, not the full SWE-bench/SWT-Bench Docker harness or AgentBench servers. Git-aware isolation validates the repository root and baseline commit, records dirty state, and then uses the same isolated snapshot materialization as copy mode; copy isolation remains the portable default. Coverage evidence for generated tests is optional and disabled by default.

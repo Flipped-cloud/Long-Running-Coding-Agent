@@ -5,12 +5,21 @@ from longrun_agent.state.transitions import StateTransitionController
 
 
 class TaskSelector:
-    def __init__(self, transitions: StateTransitionController | None = None):
+    def __init__(
+        self,
+        transitions: StateTransitionController | None = None,
+        *,
+        dependency_satisfaction: str = "candidate_complete",
+    ):
         self.transitions = transitions or StateTransitionController()
+        self.dependency_satisfaction = dependency_satisfaction
 
     def update_ready_tasks(self, state: ProjectState) -> list[str]:
         ready: list[str] = []
-        completed = {task.id for task in state.tasks if task.status == TaskStatus.CANDIDATE_COMPLETE}
+        satisfied = {TaskStatus.VERIFIED}
+        if self.dependency_satisfaction == "candidate_complete":
+            satisfied.add(TaskStatus.CANDIDATE_COMPLETE)
+        completed = {task.id for task in state.tasks if task.status in satisfied}
         for task in state.tasks:
             if task.status == TaskStatus.PENDING and all(dependency in completed for dependency in task.dependencies):
                 self.transitions.transition(state, task.id, TaskStatus.READY, reason="dependencies candidate complete", source="selector")
@@ -33,7 +42,7 @@ class TaskSelector:
             state.active_task_id = ready[0].id
             return ready[0]
         leaves = state.leaf_tasks()
-        if leaves and all(task.status == TaskStatus.CANDIDATE_COMPLETE for task in leaves):
+        if leaves and all(task.status in {TaskStatus.CANDIDATE_COMPLETE, TaskStatus.VERIFIED} for task in leaves):
             state.status = ProjectStatus.CANDIDATE_COMPLETE
             state.updated_at = utc_now()
             return None

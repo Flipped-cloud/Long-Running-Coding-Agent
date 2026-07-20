@@ -122,5 +122,34 @@ class RequestDecompositionTool(BaseTool):
             return _failure(call_id, self.name, exc)
 
 
-def control_tools() -> list[BaseTool]:
-    return [ReportProgressTool(), ReportBlockerTool(), RequestTaskCompletionTool(), RequestDecompositionTool()]
+class RegisterTestCandidateArgs(BaseModel):
+    paths: list[str] = Field(min_length=1)
+    command_argv: list[str] = Field(min_length=1)
+    issue_behavior: str = Field(min_length=1)
+    expected_failure_reason: str = Field(min_length=1)
+
+
+class RegisterTestCandidateTool(BaseTool):
+    name = "register_test_candidate"
+    description = "Register an Agent-authored test for independent baseline/candidate transition validation; this is not completion."
+    args_model = RegisterTestCandidateArgs
+
+    def execute(self, call_id: str, arguments: RegisterTestCandidateArgs, context: ToolContext) -> ToolResult:
+        try:
+            candidate = _channel(context).register_test_candidate(**arguments.model_dump())
+            return ToolResult(
+                tool_call_id=call_id,
+                tool_name=self.name,
+                success=True,
+                summary=f"test candidate registered: {candidate.candidate_id}",
+                metadata={"candidate_id": candidate.candidate_id},
+            )
+        except ValueError as exc:
+            return _failure(call_id, self.name, exc)
+
+
+def control_tools(*, generated_tests: bool = False) -> list[BaseTool]:
+    tools: list[BaseTool] = [ReportProgressTool(), ReportBlockerTool(), RequestTaskCompletionTool(), RequestDecompositionTool()]
+    if generated_tests:
+        tools.append(RegisterTestCandidateTool())
+    return tools

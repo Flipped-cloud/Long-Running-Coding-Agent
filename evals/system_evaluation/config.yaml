@@ -1,0 +1,17 @@
+evaluation_id: local-system-v051-oracle
+tasks:
+  - full_fix
+  - partial_fix
+  - regression
+  - test_tampering
+conditions:
+  - verification_disabled
+  - legacy_command
+  - contract_verification
+  - contract_plus_generated_tests
+trials: 3
+seeds: [0, 1, 2]
+budgets: {max_project_sessions: 4}
+reset_policy: per_trial
+verification_policy: contract
+output_root: ../../.runs/evaluations

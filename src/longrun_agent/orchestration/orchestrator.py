@@ -14,7 +14,7 @@ from longrun_agent.knowledge.consolidator import KnowledgeConsolidator, Knowledg
 from longrun_agent.knowledge.evidence import RepositoryProfiler, build_experience_pack
 from longrun_agent.knowledge.renderer import render_bundle
 from longrun_agent.knowledge.retrieval import retrieve_bundle
-from longrun_agent.knowledge.schema import KnowledgeRetrievalQuery, KnowledgeUseType
+from longrun_agent.knowledge.schema import ExperienceEvidenceItem, KnowledgeRetrievalQuery, KnowledgeUseType
 from longrun_agent.knowledge.store import KnowledgeStore
 from longrun_agent.knowledge.tools import KnowledgeUseChannel, ReportKnowledgeUseTool
 from longrun_agent.model.base import ModelProvider
@@ -26,13 +26,31 @@ from longrun_agent.planning.initial_planner import InitialPlanner
 from longrun_agent.planning.recovery_evaluator import RecoveryCandidateEvaluator
 from longrun_agent.planning.recovery_generator import RecoveryCandidateGenerator
 from longrun_agent.protocol import ErrorType, RunResult, RunStatus, ToolResult
-from longrun_agent.state.aggregation import aggregate_candidate_complete_parents, project_statistics
+from longrun_agent.state.aggregation import aggregate_candidate_complete_parents, aggregate_verified_parents, project_statistics
 from longrun_agent.state.schema import CompletionCandidate, PlanRevision, ProjectState, ProjectStatus, TaskNode, TaskStatus, utc_now
 from longrun_agent.state.selector import TaskSelector
 from longrun_agent.state.store import ProjectStateStore
 from longrun_agent.state.transitions import StateTransitionController
 from longrun_agent.telemetry.project_logger import ProjectLogger
 from longrun_agent.tools.router import ToolRouter
+from longrun_agent.verification.contract import load_contract
+from longrun_agent.verification.gateway import VerificationGateway
+from longrun_agent.verification.renderer import render_agent_feedback
+from longrun_agent.verification.runner import VerificationRunner
+from longrun_agent.verification.schema import (
+    CheckExecutionResult,
+    CheckKind,
+    CheckVisibility,
+    ExecutionStatus,
+    VerificationCheck,
+    VerificationContract,
+    VerificationPurpose,
+    VerificationReport,
+    VerificationSummary,
+    VerificationVerdict,
+)
+from longrun_agent.verification.snapshot import CopySnapshotProvider, GitWorktreeSnapshotProvider
+from longrun_agent.verification.store import VerificationStore
 
 
 class ProjectOrchestrator:
@@ -51,8 +69,14 @@ class ProjectOrchestrator:
             config.state.root, workspace_root=config.workspace.root, atomic_write=config.state.atomic_write
         )
         self.transitions = StateTransitionController()
-        self.selector = TaskSelector(self.transitions)
+        self.selector = TaskSelector(
+            self.transitions,
+            dependency_satisfaction=config.verification.policy.dependency_satisfaction,
+        )
         self._last_final_verification_exit_code: int | None = None
+        self.verification_store: VerificationStore | None = None
+        self.verification_contract: VerificationContract | None = None
+        self._latest_verification_report: VerificationReport | None = None
         self.knowledge_store = (
             KnowledgeStore(
                 config.knowledge.root,
@@ -71,11 +95,17 @@ class ProjectOrchestrator:
             state = ProjectState(project_id=self.project_id, objective=objective)
             self.store.create(state)
             self._logger(state).log("project_created", project_id=state.project_id, plan_version=state.plan_version)
+        self._initialize_verification(state)
+        if self._verification_initialization_failed():
+            return self._outcome(state, 0, [])
         return self.run_project(state)
 
     def resume(self, project_id: str) -> ProjectRunOutcome:
         self.project_id = project_id
         state = self.store.load(project_id)
+        self._initialize_verification(state)
+        if self._verification_initialization_failed():
+            return self._outcome(state, 0, [])
         if state.status in {ProjectStatus.SESSION_LIMIT_REACHED, ProjectStatus.TIME_LIMIT_REACHED, ProjectStatus.FAILED}:
             state.status = ProjectStatus.ACTIVE
             state.updated_at = utc_now()
@@ -86,6 +116,198 @@ class ProjectOrchestrator:
         self._logger(state).log("project_resumed", project_id=state.project_id, plan_version=state.plan_version)
         return self.run_project(state)
 
+    def _initialize_verification(self, state: ProjectState) -> None:
+        if self.config.verification.mode != "contract":
+            return
+        assert self.config.verification.store_root is not None
+        self.verification_store = VerificationStore(
+            self.config.verification.store_root,
+            state.project_id,
+            workspace_root=self.config.workspace.root,
+            atomic_write=self.config.state.atomic_write,
+        )
+        stored_contract_id = state.project_verification_contract_id or next(
+            (task.verification_contract_id for task in state.tasks if task.verification_contract_id),
+            None,
+        )
+        if stored_contract_id:
+            contract = self.verification_store.load_contract(stored_contract_id)
+            if not self.verification_store.verify_contract_hash(contract):
+                self.verification_contract = contract
+                report = self._verification_gateway().verify(contract)
+                self._latest_verification_report = report
+                state.status = ProjectStatus.VERIFICATION_INCONCLUSIVE
+                state.latest_project_verification_report_id = report.report_id
+                self.store.save(state)
+                return
+        else:
+            assert self.config.verification.contract.path is not None
+            contract = load_contract(self.config.verification.contract.path, workspace_root=self.config.workspace.root)
+            if contract.project_id == "__PROJECT_ID__":
+                contract = contract.model_copy(update={"project_id": state.project_id})
+            if contract.project_id != state.project_id:
+                raise ValueError(f"verification contract project_id {contract.project_id!r} does not match project {state.project_id!r}")
+            contract = contract.freeze()
+            self.verification_store.save_contract(contract)
+            if contract.scope == "project":
+                state.project_verification_contract_id = contract.contract_id
+            else:
+                task = next(
+                    (
+                        item
+                        for item in state.tasks
+                        if item.id == contract.task_id or (contract.task_key is not None and item.key == contract.task_key)
+                    ),
+                    None,
+                )
+                if task is not None:
+                    task.verification_contract_id = contract.contract_id
+            self.verification_store.append_verification_event(
+                "verification_contract_frozen",
+                project_id=state.project_id,
+                task_id=contract.task_id,
+                contract_id=contract.contract_id,
+                contract_hash=contract.contract_hash,
+            )
+            self.store.save(state)
+        self.verification_contract = contract
+        manager = self._snapshot_manager()
+        if not manager.baseline_manifest_path.exists():
+            manifest = manager.create_baseline()
+            self.verification_store.append_verification_event(
+                "baseline_snapshot_created",
+                project_id=state.project_id,
+                contract_id=contract.contract_id,
+                contract_hash=contract.contract_hash,
+                artifact_paths=[str(manager.baseline_manifest_path)],
+                sanitized_reason=f"baseline fingerprint {manifest.fingerprint}",
+            )
+
+    def _verification_initialization_failed(self) -> bool:
+        return bool(
+            self._latest_verification_report is not None
+            and self._latest_verification_report.verdict == VerificationVerdict.CONTRACT_INVALID
+        )
+
+    def _snapshot_manager(self):
+        assert self.verification_store is not None
+        provider = GitWorktreeSnapshotProvider if self.config.verification.execution.isolation == "git_worktree" else CopySnapshotProvider
+        return provider(
+            self.config.workspace.root,
+            self.verification_store.root,
+            cache_patterns=self.config.verification.execution.cache_patterns,
+        )
+
+    def _verification_gateway(self) -> VerificationGateway:
+        assert self.verification_store is not None
+        return VerificationGateway(
+            store=self.verification_store,
+            snapshot_manager=self._snapshot_manager(),
+            runner=VerificationRunner(
+                self.verification_store.root / "artifacts",
+                max_output_chars=self.config.verification.execution.max_output_chars,
+            ),
+            preserve_failed_snapshot=self.config.verification.execution.preserve_failed_snapshot,
+        )
+
+    def _contract_for_task(self, task: TaskNode) -> VerificationContract | None:
+        contract = self.verification_contract
+        if contract is None or contract.scope != "task":
+            return None
+        if contract.task_id == task.id or (contract.task_key is not None and contract.task_key == task.key):
+            return contract
+        return None
+
+    def _verify_task_candidate(
+        self,
+        state: ProjectState,
+        task: TaskNode,
+        channel: TaskControlChannel | None,
+    ) -> VerificationReport | None:
+        contract = self._contract_for_task(task)
+        retrying_infrastructure = task.status == TaskStatus.BLOCKED and task.verification_status == "infrastructure_error"
+        if contract is None or (task.status != TaskStatus.CANDIDATE_COMPLETE and not retrying_infrastructure):
+            return None
+        self._transition(
+            state,
+            task.id,
+            TaskStatus.VERIFICATION_PENDING,
+            reason="completion candidate awaiting independent verification",
+            source="verification",
+        )
+        task.verification_attempts += 1
+        test_candidates = channel.test_candidates if channel is not None else self.verification_store.list_test_candidates()
+        report = self._verification_gateway().verify(contract, task_id=task.id, test_candidates=test_candidates)
+        self._latest_verification_report = report
+        task.latest_verification_report_id = report.report_id
+        task.verification_status = report.verdict.value
+        if report.verdict == VerificationVerdict.VERIFIED:
+            self._transition(state, task.id, TaskStatus.VERIFIED, reason="verification contract passed", source="verification")
+            task.verified_at = utc_now()
+            task.verified_contract_hash = report.contract_hash
+            self._logger(state).log(
+                "task_verified",
+                project_id=state.project_id,
+                task_id=task.id,
+                plan_version=state.plan_version,
+                payload={"report_id": report.report_id, "verdict": report.verdict.value},
+            )
+        elif report.verdict in {VerificationVerdict.PARTIAL, VerificationVerdict.REOPENED}:
+            self._reopen_task_after_verification(state, task, report)
+        elif report.verdict == VerificationVerdict.INFRASTRUCTURE_ERROR:
+            task.progress_notes.append(report.sanitized_feedback)
+            self._transition(
+                state,
+                task.id,
+                TaskStatus.BLOCKED,
+                reason="verification infrastructure unavailable; resume permitted",
+                source="verification",
+            )
+        else:
+            self._transition(
+                state,
+                task.id,
+                TaskStatus.BLOCKED,
+                reason=report.sanitized_feedback or "verification inconclusive",
+                source="verification",
+            )
+        return report
+
+    def _persist_test_candidates(self, state: ProjectState, channel: TaskControlChannel) -> None:
+        if self.verification_store is None:
+            return
+        for candidate in channel.test_candidates:
+            self.verification_store.save_test_candidate(candidate)
+            self.verification_store.append_verification_event(
+                "test_candidate_registered",
+                project_id=state.project_id,
+                task_id=candidate.task_id,
+                session_id=candidate.session_id,
+                contract_id=self.verification_contract.contract_id if self.verification_contract else None,
+                contract_hash=self.verification_contract.contract_hash if self.verification_contract else None,
+                sanitized_reason="Agent-authored test candidate registered for independent validation",
+                evidence_ids=[candidate.candidate_id],
+            )
+
+    def _reopen_task_after_verification(self, state: ProjectState, task: TaskNode, report: VerificationReport) -> None:
+        task.reopen_count += 1
+        task.progress_notes.append(render_agent_feedback(report))
+        self._transition(state, task.id, TaskStatus.REOPENED, reason="verification requirements not met", source="verification")
+        self._logger(state).log(
+            "task_reopened",
+            project_id=state.project_id,
+            task_id=task.id,
+            plan_version=state.plan_version,
+            reason=report.sanitized_feedback,
+            payload={"report_id": report.report_id, "verdict": report.verdict.value},
+        )
+        if task.reopen_count > self.config.verification.policy.max_task_reopens:
+            self._transition(state, task.id, TaskStatus.BLOCKED, reason="maximum verification reopens reached", source="verification")
+        else:
+            task.completion_candidate = None
+            task.completion_summary = None
+            self._transition(state, task.id, TaskStatus.READY, reason="continue after verification feedback", source="verification")
+
     def run_project(self, state: ProjectState) -> ProjectRunOutcome:
         project_started = time.monotonic()
         project_deadline = project_started + self.config.planning.execution.max_project_seconds
@@ -95,6 +317,16 @@ class ProjectOrchestrator:
             return self._outcome(state, 0, run_statuses)
         if not state.tasks and self.config.planning.mode != "disabled":
             self._create_initial_plan(state)
+        if (
+            state.status == ProjectStatus.VERIFICATION_PENDING
+            and self.verification_contract is not None
+            and self.verification_contract.scope == "project"
+        ):
+            self._finalize_contract_verification(state, project_started)
+            return self._outcome(state, 0, run_statuses)
+        for task in state.tasks:
+            if task.status == TaskStatus.BLOCKED and task.verification_status == "infrastructure_error":
+                self._verify_task_candidate(state, task, None)
         if self._project_time_exhausted(project_deadline):
             self._mark_project_time_limit(state, project_started)
             return self._outcome(state, 0, run_statuses)
@@ -106,6 +338,10 @@ class ProjectOrchestrator:
             for parent_id in aggregate_candidate_complete_parents(state):
                 self._logger(state).log(
                     "parent_task_aggregated", project_id=state.project_id, task_id=parent_id, plan_version=state.plan_version
+                )
+            for parent_id in aggregate_verified_parents(state):
+                self._logger(state).log(
+                    "parent_task_verified", project_id=state.project_id, task_id=parent_id, plan_version=state.plan_version
                 )
             task = self.selector.select_next(state)
             self.store.save(state)
@@ -142,12 +378,33 @@ class ProjectOrchestrator:
             self._logger(state).log(
                 "task_started", project_id=state.project_id, task_id=task.id, session_id=session_id, plan_version=state.plan_version
             )
-            channel = TaskControlChannel()
+            channel = TaskControlChannel(
+                workspace=self.config.workspace.root,
+                task_id=task.id,
+                session_id=session_id,
+                verification_contract=self._contract_for_task(task),
+                max_test_candidates=(
+                    self.config.verification.generated_tests.max_candidates_per_task if self.config.verification.mode == "contract" else 0
+                ),
+            )
             starting_task_status = task.status.value
             result, trace, knowledge_channel, knowledge_bundle = self._run_task_session(state, task, channel, session_id, project_deadline)
             run_statuses.append(result.status)
             self._process_control_signals(state, task, channel, session_id, result, trace)
+            self._persist_test_candidates(state, channel)
             session_record = self._session_record(state, task, session_id, result, channel, trace)
+            verification_report = self._verify_task_candidate(state, task, channel)
+            project_verification_attempted = False
+            if (
+                verification_report is None
+                and self.verification_contract is not None
+                and self.verification_contract.scope == "project"
+                and state.leaf_tasks()
+                and all(item.status in {TaskStatus.CANDIDATE_COMPLETE, TaskStatus.VERIFIED} for item in state.leaf_tasks())
+            ):
+                self._finalize_contract_verification(state, project_started)
+                verification_report = self._latest_verification_report
+                project_verification_attempted = True
             self._process_knowledge_after_session(
                 state,
                 task,
@@ -155,10 +412,13 @@ class ProjectOrchestrator:
                 starting_task_status=starting_task_status,
                 knowledge_channel=knowledge_channel,
                 knowledge_bundle=knowledge_bundle,
+                verification_report=verification_report,
             )
             self.store.append_session(state.project_id, session_record)
             self.store.save(state)
             self._write_metrics(state, project_started)
+            if project_verification_attempted:
+                break
             if state.status in {ProjectStatus.CANDIDATE_COMPLETE, ProjectStatus.BLOCKED, ProjectStatus.FAILED}:
                 break
             if self._project_time_exhausted(project_deadline):
@@ -168,8 +428,14 @@ class ProjectOrchestrator:
             self._logger(state).log(
                 "parent_task_aggregated", project_id=state.project_id, task_id=parent_id, plan_version=state.plan_version
             )
+        for parent_id in aggregate_verified_parents(state):
+            self._logger(state).log("parent_task_verified", project_id=state.project_id, task_id=parent_id, plan_version=state.plan_version)
         leaves = state.leaf_tasks()
-        if state.status == ProjectStatus.ACTIVE and leaves and all(task.status == TaskStatus.CANDIDATE_COMPLETE for task in leaves):
+        if (
+            state.status == ProjectStatus.ACTIVE
+            and leaves
+            and all(task.status in {TaskStatus.CANDIDATE_COMPLETE, TaskStatus.VERIFIED} for task in leaves)
+        ):
             self._finalize_candidate_complete(state, project_started)
         elif state.session_count >= self.config.planning.execution.max_project_sessions and state.status == ProjectStatus.ACTIVE:
             state.status = ProjectStatus.SESSION_LIMIT_REACHED
@@ -195,6 +461,10 @@ class ProjectOrchestrator:
         else:
             tasks = planner.plan(project_id=state.project_id, objective=state.objective)
         state.tasks = tasks
+        if self.verification_contract is not None and self.verification_contract.scope == "task":
+            for task in state.tasks:
+                if self.verification_contract.task_id == task.id or self.verification_contract.task_key == task.key:
+                    task.verification_contract_id = self.verification_contract.contract_id
         state.plan_version += 1
         state.updated_at = utc_now()
         state.revisions.append(
@@ -222,7 +492,15 @@ class ProjectOrchestrator:
             exposed_skill_ids=knowledge_bundle.primary_skill_ids,
         )
         knowledge_tools = [ReportKnowledgeUseTool()] if self.config.knowledge.mode != "disabled" else []
-        router = ToolRouter([*default_router().tools.values(), *control_tools(), *knowledge_tools])
+        router = ToolRouter(
+            [
+                *default_router().tools.values(),
+                *control_tools(
+                    generated_tests=(self.config.verification.mode == "contract" and self.config.verification.generated_tests.enabled)
+                ),
+                *knowledge_tools,
+            ]
+        )
         trace = SessionTrace()
         seed = build_task_context_seed(
             state,
@@ -389,6 +667,7 @@ class ProjectOrchestrator:
         starting_task_status: str,
         knowledge_channel: KnowledgeUseChannel,
         knowledge_bundle,
+        verification_report: VerificationReport | None = None,
     ) -> None:
         if self.config.knowledge.mode == "disabled":
             return
@@ -454,7 +733,43 @@ class ProjectOrchestrator:
                 workspace_root=self.config.workspace.root,
                 max_evidence_items=self.config.knowledge.episode.max_evidence_items,
             )
+            if verification_report is not None:
+                pack.verification_report_id = verification_report.report_id
+                pack.verification_verdict = verification_report.verdict.value
+                pack.failed_check_categories = sorted(
+                    {
+                        item.kind.value
+                        for item in verification_report.transitions
+                        if item.required and item.transition.value not in {"F2P", "P2P"}
+                    }
+                )
+                pack.f2p_rate = verification_report.summary.f2p_rate
+                pack.p2p_rate = verification_report.summary.p2p_rate
+                pack.integrity_violations = [item.category for item in verification_report.integrity_violations]
+                pack.infrastructure_error = verification_report.infrastructure_error
+                if verification_report.verdict == VerificationVerdict.VERIFIED:
+                    pack.successful_verifications.append(f"verification_report:{verification_report.report_id}")
+                    pack.evidence_items.append(
+                        ExperienceEvidenceItem(
+                            evidence_id=f"{session_record.get('session_id')}:verification",
+                            project_id=state.project_id,
+                            task_id=task.id,
+                            session_id=str(session_record.get("session_id") or ""),
+                            run_id=str(session_record.get("run_id") or session_record.get("session_id") or ""),
+                            event_type="successful_verification",
+                            summary="Independent verification contract passed all required checks with integrity preserved.",
+                            success=True,
+                            timestamp=verification_report.created_at,
+                        )
+                    )
+                elif verification_report.verdict in {VerificationVerdict.PARTIAL, VerificationVerdict.REOPENED}:
+                    pack.failed_verifications.append(f"verification_report:{verification_report.report_id}:required_check_category_failed")
             attribution = _knowledge_attribution(task, pack)
+            verified = task.status == TaskStatus.VERIFIED or (
+                verification_report is not None and verification_report.verdict == VerificationVerdict.VERIFIED
+            )
+            if self.config.verification.mode != "contract":
+                verified = task.status == TaskStatus.CANDIDATE_COMPLETE
             outcome = KnowledgeSessionOutcome(
                 project_id=state.project_id,
                 task_id=task.id,
@@ -463,8 +778,13 @@ class ProjectOrchestrator:
                 referenced_memory_ids=referenced_memory_ids,
                 referenced_skill_ids=referenced_skill_ids,
                 attribution=attribution,
-                verification_passed=bool(pack.successful_verifications),
+                verification_passed=(
+                    verification_report.verdict == VerificationVerdict.VERIFIED
+                    if verification_report is not None
+                    else bool(pack.successful_verifications)
+                ),
                 candidate_complete=task.status == TaskStatus.CANDIDATE_COMPLETE,
+                verified=verified,
                 experience_pack=pack,
             )
             result = KnowledgeConsolidator(self.config.knowledge, self.knowledge_store, self.model).consolidate(outcome)
@@ -645,6 +965,8 @@ class ProjectOrchestrator:
         )
 
     def _acceptance_criteria_satisfied(self, task: TaskNode, verification_commands: list[str]) -> bool:
+        if self.config.verification.mode == "contract":
+            return bool(verification_commands)
         if self._last_final_verification_exit_code == 0:
             return True
         if not verification_commands:
@@ -910,6 +1232,9 @@ class ProjectOrchestrator:
         self._write_metrics(state, project_started)
 
     def _finalize_candidate_complete(self, state: ProjectState, project_started: float) -> None:
+        if self.config.verification.mode == "contract":
+            self._finalize_contract_verification(state, project_started)
+            return
         command = self.config.planning.execution.final_verification_command
         if command:
             self._logger(state).log("final_verification_started", project_id=state.project_id, plan_version=state.plan_version)
@@ -952,6 +1277,15 @@ class ProjectOrchestrator:
                 plan_version=state.plan_version,
                 payload={"exit_code": exit_code, "timed_out": timed_out},
             )
+            if self.config.verification.mode == "legacy_command":
+                self._save_legacy_verification_report(
+                    state,
+                    command=command,
+                    exit_code=exit_code,
+                    timed_out=timed_out,
+                    stdout=stdout,
+                    stderr=stderr,
+                )
             if exit_code != 0:
                 state.status = ProjectStatus.FAILED
                 state.updated_at = utc_now()
@@ -964,6 +1298,190 @@ class ProjectOrchestrator:
         self.store.save(state)
         self._write_metrics(state, project_started)
 
+    def _save_legacy_verification_report(
+        self,
+        state: ProjectState,
+        *,
+        command: list[str],
+        exit_code: int,
+        timed_out: bool,
+        stdout: str,
+        stderr: str,
+    ) -> None:
+        assert self.config.verification.store_root is not None
+        store = VerificationStore(
+            self.config.verification.store_root,
+            state.project_id,
+            workspace_root=self.config.workspace.root,
+            atomic_write=self.config.state.atomic_write,
+        )
+        contract = VerificationContract(
+            contract_id=f"legacy-{state.project_id}",
+            project_id=state.project_id,
+            source="legacy",
+            checks=[
+                VerificationCheck(
+                    check_id="legacy-final-command",
+                    title="Legacy final verification command",
+                    kind=CheckKind.CANDIDATE_ONLY,
+                    visibility=CheckVisibility.PUBLIC,
+                    argv=command,
+                    timeout_seconds=self.config.planning.execution.final_verification_timeout_seconds,
+                )
+            ],
+        ).freeze()
+        store.save_contract(contract)
+        status = ExecutionStatus.TIMEOUT if timed_out else ExecutionStatus.PASSED if exit_code == 0 else ExecutionStatus.FAILED
+        result = CheckExecutionResult(
+            check_id="legacy-final-command",
+            kind=CheckKind.CANDIDATE_ONLY,
+            visibility=CheckVisibility.PUBLIC,
+            workspace_kind="current",
+            started_at=utc_now(),
+            finished_at=utc_now(),
+            duration_seconds=0,
+            exit_code=exit_code,
+            timed_out=timed_out,
+            stdout_excerpt=stdout[-self.config.verification.execution.max_output_chars :],
+            stderr_excerpt=stderr[-self.config.verification.execution.max_output_chars :],
+            status=status,
+            infrastructure_error="legacy verification timed out" if timed_out else None,
+        )
+        report = VerificationReport(
+            purpose=VerificationPurpose.RUNTIME,
+            project_id=state.project_id,
+            contract_id=contract.contract_id,
+            contract_hash=contract.contract_hash,
+            verdict=VerificationVerdict.VERIFIED if exit_code == 0 else VerificationVerdict.REOPENED,
+            candidate_results=[result],
+            summary=VerificationSummary(
+                required_checks_passed=int(exit_code == 0),
+                required_checks_failed=int(exit_code != 0),
+                integrity_passed=True,
+            ),
+            sanitized_feedback="Legacy final verification passed." if exit_code == 0 else "Legacy final verification failed.",
+        )
+        store.save_report(report)
+        self._latest_verification_report = report
+        state.latest_project_verification_report_id = report.report_id
+
+    def _finalize_contract_verification(self, state: ProjectState, project_started: float) -> None:
+        contract = self.verification_contract
+        if contract is None or contract.scope != "project":
+            if self.config.verification.policy.require_project_contract:
+                state.status = ProjectStatus.VERIFICATION_INCONCLUSIVE
+                self._logger(state).log(
+                    "verification_inconclusive",
+                    project_id=state.project_id,
+                    plan_version=state.plan_version,
+                    reason="project verification contract is missing",
+                )
+            else:
+                state.status = ProjectStatus.CANDIDATE_COMPLETE
+            self.store.save(state)
+            self._write_metrics(state, project_started)
+            return
+        if state.project_verification_attempts >= self.config.verification.policy.max_project_verification_attempts:
+            state.status = ProjectStatus.VERIFICATION_INCONCLUSIVE
+            self.store.save(state)
+            self._write_metrics(state, project_started)
+            return
+        state.status = ProjectStatus.VERIFICATION_PENDING
+        state.project_verification_attempts += 1
+        self._logger(state).log(
+            "project_verification_pending",
+            project_id=state.project_id,
+            plan_version=state.plan_version,
+            payload={"contract_id": contract.contract_id, "contract_hash": contract.contract_hash},
+        )
+        test_candidates = self.verification_store.list_test_candidates() if self.verification_store else []
+        report = self._verification_gateway().verify(contract, test_candidates=test_candidates)
+        self._latest_verification_report = report
+        state.latest_project_verification_report_id = report.report_id
+        if report.verdict == VerificationVerdict.VERIFIED:
+            self._mark_project_tasks_verified(state, report)
+            state.status = ProjectStatus.VERIFIED
+            state.verified_at = utc_now()
+            self._logger(state).log(
+                "project_verified",
+                project_id=state.project_id,
+                plan_version=state.plan_version,
+                payload={"report_id": report.report_id, "verdict": report.verdict.value},
+            )
+        elif report.verdict == VerificationVerdict.PARTIAL:
+            state.status = ProjectStatus.PARTIALLY_VERIFIED
+            self._reopen_relevant_project_task(state, report)
+        elif report.verdict == VerificationVerdict.REOPENED:
+            state.status = ProjectStatus.ACTIVE
+            self._reopen_relevant_project_task(state, report)
+        elif report.verdict == VerificationVerdict.INFRASTRUCTURE_ERROR:
+            state.status = ProjectStatus.VERIFICATION_PENDING
+            self._logger(state).log(
+                "verification_infrastructure_error",
+                project_id=state.project_id,
+                plan_version=state.plan_version,
+                reason=report.sanitized_feedback,
+                payload={"report_id": report.report_id},
+            )
+        else:
+            state.status = ProjectStatus.VERIFICATION_INCONCLUSIVE
+            self._logger(state).log(
+                "verification_inconclusive",
+                project_id=state.project_id,
+                plan_version=state.plan_version,
+                reason=report.sanitized_feedback,
+                payload={"report_id": report.report_id, "verdict": report.verdict.value},
+            )
+        state.updated_at = utc_now()
+        self.store.save(state)
+        self._write_metrics(state, project_started)
+
+    def _mark_project_tasks_verified(self, state: ProjectState, report: VerificationReport) -> None:
+        for task in state.leaf_tasks():
+            if task.status != TaskStatus.CANDIDATE_COMPLETE:
+                continue
+            self._transition(
+                state,
+                task.id,
+                TaskStatus.VERIFICATION_PENDING,
+                reason="project verification contract passed",
+                source="verification",
+            )
+            self._transition(
+                state,
+                task.id,
+                TaskStatus.VERIFIED,
+                reason="covered by verified project contract",
+                source="verification",
+            )
+            task.verification_status = report.verdict.value
+            task.latest_verification_report_id = report.report_id
+            task.verified_at = utc_now()
+            task.verified_contract_hash = report.contract_hash
+            self._logger(state).log(
+                "task_verified",
+                project_id=state.project_id,
+                task_id=task.id,
+                plan_version=state.plan_version,
+                payload={"report_id": report.report_id, "verdict": report.verdict.value, "scope": "project"},
+            )
+
+    def _reopen_relevant_project_task(self, state: ProjectState, report: VerificationReport) -> None:
+        candidates = [task for task in reversed(state.leaf_tasks()) if task.status in {TaskStatus.CANDIDATE_COMPLETE, TaskStatus.VERIFIED}]
+        if not candidates:
+            return
+        task = candidates[0]
+        if task.status == TaskStatus.VERIFIED:
+            task.status = TaskStatus.CANDIDATE_COMPLETE
+        self._transition(
+            state,
+            task.id,
+            TaskStatus.VERIFICATION_PENDING,
+            reason="project verification mapped failure to task",
+            source="verification",
+        )
+        self._reopen_task_after_verification(state, task, report)
+
     def _outcome(self, state: ProjectState, sessions_run: int, run_statuses: list[RunStatus]) -> ProjectRunOutcome:
         return ProjectRunOutcome(
             project_id=state.project_id,
@@ -971,6 +1489,8 @@ class ProjectOrchestrator:
             sessions_run=sessions_run,
             state_path=str(self.store.state_path(state.project_id)),
             run_statuses=run_statuses,
+            verification_verdict=(self._latest_verification_report.verdict.value if self._latest_verification_report else None),
+            verification_report_id=(self._latest_verification_report.report_id if self._latest_verification_report else None),
         )
 
     def _transition(self, state: ProjectState, task_id: str, new_status: TaskStatus, *, reason: str, source: str) -> None:
@@ -998,7 +1518,10 @@ def _duration_seconds(started_at: str, finished_at: str) -> float:
 
 
 def _knowledge_attribution(task: TaskNode, pack) -> KnowledgeUseType:
-    verified_success = task.status == TaskStatus.CANDIDATE_COMPLETE and bool(pack.successful_verifications)
+    formally_verified = (
+        pack.verification_verdict == "verified" if pack.verification_verdict else task.status == TaskStatus.CANDIDATE_COMPLETE
+    )
+    verified_success = formally_verified and bool(pack.successful_verifications)
     if verified_success:
         return KnowledgeUseType.HELPFUL
     if pack.files_changed and pack.failed_verifications and not pack.successful_verifications:

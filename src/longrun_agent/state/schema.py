@@ -18,6 +18,10 @@ class ProjectStatus(StrEnum):
     FAILED = "failed"
     SESSION_LIMIT_REACHED = "session_limit_reached"
     TIME_LIMIT_REACHED = "time_limit_reached"
+    VERIFICATION_PENDING = "verification_pending"
+    VERIFIED = "verified"
+    PARTIALLY_VERIFIED = "partially_verified"
+    VERIFICATION_INCONCLUSIVE = "verification_inconclusive"
 
 
 class TaskStatus(StrEnum):
@@ -28,6 +32,9 @@ class TaskStatus(StrEnum):
     CANDIDATE_COMPLETE = "candidate_complete"
     DECOMPOSED = "decomposed"
     FAILED = "failed"
+    VERIFICATION_PENDING = "verification_pending"
+    VERIFIED = "verified"
+    REOPENED = "reopened"
 
 
 class CompletionCandidate(BaseModel):
@@ -63,6 +70,13 @@ class TaskNode(BaseModel):
     completion_summary: str | None = None
     completion_candidate: CompletionCandidate | None = None
     auto_completion_recovered: bool = False
+    verification_contract_id: str | None = None
+    verification_status: str | None = None
+    latest_verification_report_id: str | None = None
+    verification_attempts: int = Field(default=0, ge=0)
+    reopen_count: int = Field(default=0, ge=0)
+    verified_at: str | None = None
+    verified_contract_hash: str | None = None
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)
 
@@ -94,6 +108,10 @@ class ProjectState(BaseModel):
     active_task_id: str | None = None
     revisions: list[PlanRevision] = Field(default_factory=list)
     session_count: int = Field(default=0, ge=0)
+    project_verification_contract_id: str | None = None
+    latest_project_verification_report_id: str | None = None
+    project_verification_attempts: int = Field(default=0, ge=0)
+    verified_at: str | None = None
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)
 

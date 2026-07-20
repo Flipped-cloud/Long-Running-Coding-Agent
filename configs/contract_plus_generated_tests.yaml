@@ -1,0 +1,12 @@
+model: {provider: fake, model_name: fake-scripted}
+workspace: {root: ../examples/verification_bench/generated_test}
+planning:
+  mode: static
+  initial_plan: {min_tasks: 1, max_tasks: 1, max_protocol_retries: 2}
+  execution: {max_project_sessions: 4, max_sessions_per_task: 2, max_project_seconds: 180}
+state: {root: ../.runs/projects, atomic_write: true}
+verification:
+  mode: contract
+  contract: {source: file, path: ../examples/verification_bench/contracts/generated_test.yaml, freeze_on_project_start: true}
+  policy: {require_project_contract: true, generated_tests_can_be_required: false}
+  generated_tests: {enabled: true, max_candidates_per_task: 3}

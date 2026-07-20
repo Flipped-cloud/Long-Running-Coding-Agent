@@ -24,7 +24,10 @@ LEGAL_TRANSITIONS = {
         TaskStatus.DECOMPOSED,
         TaskStatus.FAILED,
     },
-    TaskStatus.BLOCKED: {TaskStatus.READY, TaskStatus.DECOMPOSED},
+    TaskStatus.BLOCKED: {TaskStatus.READY, TaskStatus.DECOMPOSED, TaskStatus.VERIFICATION_PENDING},
+    TaskStatus.CANDIDATE_COMPLETE: {TaskStatus.VERIFICATION_PENDING},
+    TaskStatus.VERIFICATION_PENDING: {TaskStatus.VERIFIED, TaskStatus.REOPENED, TaskStatus.BLOCKED},
+    TaskStatus.REOPENED: {TaskStatus.READY, TaskStatus.BLOCKED},
 }
 
 

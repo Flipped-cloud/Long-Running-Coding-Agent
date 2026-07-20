@@ -1,0 +1,10 @@
+contract_id: local-partial-fix
+project_id: __PROJECT_ID__
+scope: project
+source: fixture
+hidden_assets_root: ../hidden_assets/partial_fix
+checks:
+  - {check_id: negative-odd, title: Negative odd, kind: resolution, visibility: hidden, argv: [python, -m, pytest, -q, hidden_tests/test_resolution.py::test_negative_odd], required: true}
+  - {check_id: negative-even, title: Negative even, kind: resolution, visibility: hidden, argv: [python, -m, pytest, -q, hidden_tests/test_resolution.py::test_negative_even], required: true}
+  - {check_id: public-regression, title: Public regression, kind: regression, visibility: public, argv: [python, -m, pytest, -q, tests/test_public.py], required: true}
+integrity_rules: {trusted_test_patterns: [tests/*.py], protected_paths: [tests/test_public.py]}

@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -45,3 +46,23 @@ def test_state_store_rejects_root_inside_workspace(tmp_path: Path):
     workspace.mkdir()
     with pytest.raises(ConfigurationError):
         ProjectStateStore(workspace / ".runs" / "projects", workspace_root=workspace)
+
+
+def test_state_store_retries_transient_permission_error(tmp_path: Path, monkeypatch):
+    store = ProjectStateStore(tmp_path / "projects")
+    actual_replace = os.replace
+    calls = 0
+
+    def transient_replace(src, dst):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise PermissionError("transient Windows file lock")
+        actual_replace(src, dst)
+
+    monkeypatch.setattr("longrun_agent.state.store.os.replace", transient_replace)
+
+    store.create(state())
+
+    assert calls == 3
+    assert store.load("p1").objective == "ship"

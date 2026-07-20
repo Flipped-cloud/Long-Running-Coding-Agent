@@ -339,6 +339,84 @@ class StateConfig(BaseModel):
     atomic_write: bool = True
 
 
+class VerificationContractConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["file", "legacy", "fixture", "external_adapter"] = "file"
+    path: Path | None = None
+    freeze_on_project_start: bool = True
+    legacy_command_fallback: bool = True
+
+
+class VerificationExecutionConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    isolation: Literal["copy", "git_worktree"] = "copy"
+    timeout_seconds: int = Field(default=120, ge=1)
+    max_parallel_checks: int = Field(default=1, ge=1)
+    preserve_failed_snapshot: bool = True
+    max_output_chars: int = Field(default=20000, ge=100)
+    cache_patterns: list[str] = Field(default_factory=list)
+
+
+class VerificationPolicyConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    require_project_contract: bool = True
+    require_task_contract_for_verified_task: bool = False
+    dependency_satisfaction: Literal["candidate_complete", "verified"] = "candidate_complete"
+    max_task_reopens: int = Field(default=2, ge=0)
+    max_project_verification_attempts: int = Field(default=3, ge=1)
+    generated_tests_can_be_required: bool = False
+    fail_on_protected_path_change: bool = True
+    fail_on_contract_mismatch: bool = True
+
+
+class GeneratedTestsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    max_candidates_per_task: int = Field(default=3, ge=0)
+    require_baseline_failure: bool = True
+    require_candidate_pass: bool = True
+    forbid_candidate_regressions: bool = True
+    coverage_enabled: bool = False
+
+
+class VerificationConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["disabled", "legacy_command", "contract"] = "disabled"
+    contract: VerificationContractConfig = Field(default_factory=VerificationContractConfig)
+    execution: VerificationExecutionConfig = Field(default_factory=VerificationExecutionConfig)
+    policy: VerificationPolicyConfig = Field(default_factory=VerificationPolicyConfig)
+    generated_tests: GeneratedTestsConfig = Field(default_factory=GeneratedTestsConfig)
+    store_root: Path | None = None
+
+    @model_validator(mode="after")
+    def validate_contract_mode(self) -> VerificationConfig:
+        if self.mode == "contract" and self.contract.path is None:
+            raise ValueError("verification.contract.path is required in contract mode")
+        if self.mode == "contract" and not self.contract.freeze_on_project_start:
+            raise ValueError("verification.contract.freeze_on_project_start must be true")
+        if self.policy.generated_tests_can_be_required:
+            raise ValueError("verification.policy.generated_tests_can_be_required must be false in v0.5")
+        return self
+
+
+class EvaluationConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    root: Path = Path(".runs/evaluations")
+    trials: int = Field(default=1, ge=1)
+    seeds: list[int] = Field(default_factory=lambda: [0])
+    continue_on_case_error: bool = True
+    deterministic_failure_attribution: bool = True
+    model_assisted_attribution: bool = False
+    preserve_workspaces: bool = False
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -351,6 +429,8 @@ class AppConfig(BaseModel):
     state: StateConfig = Field(default_factory=StateConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
+    verification: VerificationConfig = Field(default_factory=VerificationConfig)
+    evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
     config_dir: Path = Field(default=Path("."), exclude=True)
 
     @model_validator(mode="after")
@@ -364,8 +444,20 @@ class AppConfig(BaseModel):
             self.state.root = (base / self.state.root).resolve()
         if not self.knowledge.root.is_absolute():
             self.knowledge.root = (base / self.knowledge.root).resolve()
+        if self.verification.contract.path is not None and not self.verification.contract.path.is_absolute():
+            self.verification.contract.path = (base / self.verification.contract.path).resolve()
+        if self.verification.store_root is None:
+            self.verification.store_root = self.state.root
+        elif not self.verification.store_root.is_absolute():
+            self.verification.store_root = (base / self.verification.store_root).resolve()
+        if not self.evaluation.root.is_absolute():
+            self.evaluation.root = (base / self.evaluation.root).resolve()
         if self.planning.initial_plan.plan_file is not None and not self.planning.initial_plan.plan_file.is_absolute():
             self.planning.initial_plan.plan_file = (base / self.planning.initial_plan.plan_file).resolve()
+        workspace = self.workspace.root.resolve()
+        verification_root = self.verification.store_root.resolve()
+        if self.verification.mode != "disabled" and (verification_root == workspace or workspace in verification_root.parents):
+            raise ValueError("verification store must be outside workspace")
         return self
 
     def sanitized(self) -> dict[str, Any]:

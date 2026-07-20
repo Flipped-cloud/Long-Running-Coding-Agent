@@ -1,0 +1,7 @@
+contract_id: local-infrastructure-failure
+project_id: __PROJECT_ID__
+scope: project
+source: fixture
+checks:
+  - {check_id: unavailable, title: Unavailable environment, kind: candidate_only, visibility: public, argv: [missing-verification-command-v05], required: true}
+integrity_rules: {}

@@ -1,0 +1,32 @@
+contract_id: local-full-fix
+contract_version: 1
+project_id: __PROJECT_ID__
+scope: project
+source: fixture
+hidden_assets_root: ../hidden_assets/full_fix
+checks:
+  - check_id: hidden-negative-resolution
+    title: Negative-number resolution category
+    kind: resolution
+    visibility: hidden
+    argv: [python, -m, pytest, -q, hidden_tests/test_resolution.py]
+    cwd: .
+    timeout_seconds: 30
+    required: true
+  - check_id: public-regression
+    title: Public zero and positive behavior
+    kind: regression
+    visibility: public
+    argv: [python, -m, pytest, -q, tests/test_public.py]
+    cwd: .
+    timeout_seconds: 30
+    required: true
+integrity_rules:
+  protected_paths: [tests/test_public.py]
+  trusted_test_patterns: [tests/*.py]
+  required_artifacts: [app.py]
+  hidden_asset_markers: [hidden_tests/*]
+generated_test_policy:
+  enabled: true
+  can_be_required: false
+  max_candidates_per_task: 3

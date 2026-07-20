@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -92,7 +93,7 @@ class ProjectStateStore:
         if self.atomic_write:
             tmp = path.with_suffix(".json.tmp")
             tmp.write_text(payload, encoding="utf-8")
-            os.replace(tmp, path)
+            _atomic_replace(tmp, path)
         else:
             path.write_text(payload, encoding="utf-8")
         self.save_revisions(state.project_id, state.revisions)
@@ -110,7 +111,7 @@ class ProjectStateStore:
         if self.atomic_write:
             tmp = path.with_suffix(".json.tmp")
             tmp.write_text(payload, encoding="utf-8")
-            os.replace(tmp, path)
+            _atomic_replace(tmp, path)
         else:
             path.write_text(payload, encoding="utf-8")
 
@@ -182,3 +183,14 @@ class ProjectStateStore:
         path = self.metrics_path(project_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+
+
+def _atomic_replace(source: Path, target: Path, *, attempts: int = 5) -> None:
+    for attempt in range(attempts):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(0.01 * (attempt + 1))

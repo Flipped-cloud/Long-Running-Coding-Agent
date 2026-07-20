@@ -1,0 +1,19 @@
+evaluation_id: local-system-v05-fixtures
+tasks:
+- full_fix
+- partial_fix
+- regression
+- test_tampering
+- generated_test
+- infrastructure_failure
+conditions:
+- contract_verification
+- contract_plus_generated_tests
+trials: 1
+seeds:
+- 0
+budgets:
+  max_project_sessions: 4
+reset_policy: per_trial
+verification_policy: contract
+output_root: ../../.runs/evaluations

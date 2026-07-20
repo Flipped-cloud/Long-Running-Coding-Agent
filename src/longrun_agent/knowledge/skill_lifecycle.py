@@ -195,6 +195,12 @@ class SkillValidator:
 
     def validate(self, skill: SkillRecord, pack: ExperienceEvidencePack) -> tuple[bool, list[str]]:
         reasons: list[str] = []
+        if pack.verification_verdict and pack.verification_verdict != "verified":
+            reasons.append("formal VERIFIED evidence required")
+        if pack.integrity_violations:
+            reasons.append("integrity violations prevent skill validation")
+        if pack.infrastructure_error:
+            reasons.append("infrastructure error is not skill success evidence")
         if not pack.successful_verifications:
             reasons.append("successful verification evidence required")
         if pack.failed_verifications and not pack.successful_verifications:
@@ -244,7 +250,7 @@ class SkillLifecycleManager:
         if self.config.mode != "memory_skill" or not self.config.skill.enabled:
             return None
         source_memory_ids = source_memory_ids or []
-        has_verified_success = bool(pack.successful_verifications)
+        has_verified_success = bool(pack.successful_verifications) and (pack.verification_verdict in {None, "verified"})
         has_code_change = bool(pack.files_changed)
         has_active_source = self._active_sources(source_memory_ids)
         if not has_verified_success:

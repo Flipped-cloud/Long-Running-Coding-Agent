@@ -98,3 +98,11 @@ def test_glm47_30min_config_loads_file_plan(monkeypatch):
     assert cfg.agent.max_steps == 12
     assert cfg.agent.terminal_grace_turns == 1
     assert cfg.agent.protocol_retries_per_step == 2
+
+
+def test_completion_only_config_has_no_runtime_final_command() -> None:
+    disabled = load_config("configs/verification_disabled.yaml")
+    legacy = load_config("configs/legacy_command.yaml")
+
+    assert disabled.planning.execution.final_verification_command == []
+    assert legacy.planning.execution.final_verification_command == ["python", "-m", "pytest", "-q"]

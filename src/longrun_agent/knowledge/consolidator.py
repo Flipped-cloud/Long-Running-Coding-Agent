@@ -34,6 +34,7 @@ class KnowledgeSessionOutcome(BaseModel):
     attribution: KnowledgeUseType
     verification_passed: bool
     candidate_complete: bool
+    verified: bool = False
     experience_pack: ExperienceEvidencePack
 
 
@@ -113,10 +114,7 @@ class KnowledgeConsolidator:
         generation_result = None
         rejection_reasons: list[str] = []
         can_induce = (
-            self.config.mode == "memory_skill"
-            and outcome.candidate_complete
-            and outcome.verification_passed
-            and bool(helpful_source_memory_ids)
+            self.config.mode == "memory_skill" and outcome.verified and outcome.verification_passed and bool(helpful_source_memory_ids)
         )
         if referenced_skill_ids and outcome.attribution == KnowledgeUseType.HELPFUL:
             rejection_reasons.append("existing_helpful_skill_reused")
@@ -125,7 +123,7 @@ class KnowledgeConsolidator:
         elif self.store.record_mutation_policy == KnowledgeMutationPolicy.FROZEN_RECORDS.value:
             rejection_reasons.append("record_mutation_policy_frozen")
         elif not can_induce:
-            if not outcome.candidate_complete or not outcome.verification_passed:
+            if not outcome.verified or not outcome.verification_passed:
                 rejection_reasons.append("verification_failed")
             if referenced_memory_ids and outcome.attribution != KnowledgeUseType.HELPFUL:
                 rejection_reasons.append("referenced_memory_not_helpful")
@@ -173,7 +171,7 @@ class KnowledgeConsolidator:
                 source_memory_ids=helpful_source_memory_ids,
                 source_memory_statuses={memory.memory_id: memory.status.value for memory in source_memories},
                 source_memory_scopes={memory.memory_id: memory.scope.value for memory in source_memories},
-                verification_passed=outcome.verification_passed and outcome.candidate_complete,
+                verification_passed=outcome.verification_passed and outcome.verified,
                 candidate_created=bool(created_skill_ids),
                 candidate_id=generated_skill.skill_id if generated_skill is not None else "",
                 final_skill_scope=generated_skill.scope.value if generated_skill is not None else "",
@@ -209,6 +207,14 @@ class KnowledgeConsolidator:
             self.store.save_episode(project_dir, pack)
         lifecycle = MemoryLifecycleManager(self.config, self.store)
         should_reflect, reason = lifecycle.should_reflect(pack)
+        if pack.infrastructure_error:
+            should_reflect = False
+            reason = "verification infrastructure errors do not trigger implementation reflection"
+            skipped_reasons.append("verification_infrastructure_error")
+        if pack.verification_verdict == "contract_invalid":
+            should_reflect = False
+            reason = "invalid contracts do not generate knowledge"
+            skipped_reasons.append("verification_contract_invalid")
         if self.store.record_mutation_policy == KnowledgeMutationPolicy.FROZEN_RECORDS.value:
             should_reflect = False
             reason = "record mutation policy frozen"

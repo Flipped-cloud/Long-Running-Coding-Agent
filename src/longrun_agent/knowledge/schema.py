@@ -141,6 +141,13 @@ class ExperienceEvidencePack(BaseModel):
     repeated_actions: list[str] = Field(default_factory=list)
     blockers: list[str] = Field(default_factory=list)
     context_reset_count: int = Field(default=0, ge=0)
+    verification_report_id: str | None = None
+    verification_verdict: str | None = None
+    failed_check_categories: list[str] = Field(default_factory=list)
+    f2p_rate: float = Field(default=0.0, ge=0, le=1)
+    p2p_rate: float = Field(default=0.0, ge=0, le=1)
+    integrity_violations: list[str] = Field(default_factory=list)
+    infrastructure_error: str | None = None
     evidence_items: list[ExperienceEvidenceItem] = Field(default_factory=list)
     created_at: str = Field(default_factory=utc_now)
 

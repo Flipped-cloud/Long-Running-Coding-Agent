@@ -18,6 +18,7 @@ from longrun_agent.knowledge.schema import (
 )
 from longrun_agent.knowledge.store import KnowledgeStore
 from longrun_agent.model.fake import FakeModelProvider
+from longrun_agent.protocol import ModelResponse, ToolCall
 
 
 def test_consolidator_uses_fixed_order_and_reuses_existing_derived_skill(tmp_path: Path) -> None:
@@ -44,6 +45,93 @@ def test_consolidator_uses_fixed_order_and_reuses_existing_derived_skill(tmp_pat
         "persist_consolidation_result",
     ]
     assert any(event.get("event_type") == "existing_derived_skill_reused" for event in store.read_jsonl(store.events_path))
+
+
+def test_consolidator_does_not_induce_skill_without_formal_verified_report(tmp_path: Path) -> None:
+    store = KnowledgeStore(tmp_path / "knowledge")
+    memory = _memory()
+    store.save_memory(memory)
+    provider = FakeModelProvider([])
+    outcome = _outcome(memory.memory_id)
+    outcome.verified = False
+    outcome.experience_pack.verification_report_id = "REPORT-partial"
+    outcome.experience_pack.verification_verdict = "partial"
+
+    result = KnowledgeConsolidator(_config(), store, provider).consolidate(outcome)
+
+    assert result.created_skill_ids == []
+    assert provider.calls == 0
+    evaluated = [event for event in store.read_jsonl(store.events_path) if event.get("event_type") == "skill_candidate_evaluated"]
+    assert evaluated[-1]["verification_passed"] is False
+    assert "verification_failed" in evaluated[-1]["rejection_reasons"]
+
+
+def test_consolidator_induces_skill_from_formal_verified_report(tmp_path: Path) -> None:
+    store = KnowledgeStore(tmp_path / "knowledge")
+    memory = _memory()
+    store.save_memory(memory)
+    outcome = _outcome(memory.memory_id)
+    outcome.verified = True
+    outcome.experience_pack.verification_report_id = "REPORT-verified"
+    outcome.experience_pack.verification_verdict = "verified"
+    provider = FakeModelProvider(
+        [
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="skill",
+                        name="submit_skill_candidate",
+                        arguments={
+                            "title": "Normalize textual validation input",
+                            "summary": "Normalize text before evaluating whether it is blank.",
+                            "scope": "portable",
+                            "preconditions": ["A textual boundary rejects blank input."],
+                            "anti_conditions": ["Whitespace is semantically meaningful."],
+                            "procedure": [
+                                {
+                                    "description": "Normalize the input before the emptiness check.",
+                                    "tool_name": "write_file",
+                                }
+                            ],
+                            "verification": ["python -m pytest -q"],
+                            "source_memory_ids": [memory.memory_id],
+                            "evidence_ids": ["e1"],
+                            "confidence": 0.9,
+                        },
+                    )
+                ]
+            )
+        ]
+    )
+
+    result = KnowledgeConsolidator(_config(), store, provider).consolidate(outcome)
+
+    assert len(result.created_skill_ids) == 1
+    assert store.load_skill(result.created_skill_ids[0]).status.value == "validated"
+    assert provider.calls == 1
+
+
+def test_infrastructure_error_skips_implementation_reflection(tmp_path: Path) -> None:
+    store = KnowledgeStore(tmp_path / "knowledge")
+    memory = _memory()
+    store.save_memory(memory)
+    outcome = _outcome(memory.memory_id)
+    outcome.verified = False
+    outcome.verification_passed = False
+    outcome.experience_pack.verification_report_id = "REPORT-infra"
+    outcome.experience_pack.verification_verdict = "infrastructure_error"
+    outcome.experience_pack.infrastructure_error = "verification command could not start"
+    outcome.experience_pack.failed_verifications = ["verification infrastructure unavailable"]
+    provider = FakeModelProvider([])
+
+    result = KnowledgeConsolidator(_config(), store, provider).consolidate(outcome)
+
+    assert result.created_memory_ids == []
+    assert result.created_skill_ids == []
+    assert provider.calls == 0
+    events = store.read_jsonl(store.events_path)
+    skipped = [event for event in events if event.get("event_type") == "reflection_skipped"]
+    assert skipped[-1]["reason"] == "verification infrastructure errors do not trigger implementation reflection"
 
 
 def _config() -> KnowledgeConfig:

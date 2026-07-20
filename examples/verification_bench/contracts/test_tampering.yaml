@@ -1,0 +1,9 @@
+contract_id: local-test-tampering
+project_id: __PROJECT_ID__
+scope: project
+source: fixture
+checks:
+  - {check_id: trusted, title: Trusted behavior, kind: resolution, visibility: public, argv: [python, -m, pytest, -q, tests/test_trusted.py], required: true}
+integrity_rules:
+  protected_paths: [tests/test_trusted.py]
+  trusted_test_patterns: [tests/*.py]

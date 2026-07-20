@@ -11,3 +11,5 @@ class ProjectRunOutcome(BaseModel):
     sessions_run: int
     state_path: str
     run_statuses: list[RunStatus]
+    verification_verdict: str | None = None
+    verification_report_id: str | None = None
