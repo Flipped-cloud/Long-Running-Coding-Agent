@@ -1,0 +1,33 @@
+model:
+  provider: openai_compatible
+  model_name: ${MODEL_NAME}
+  base_url: ${OPENAI_BASE_URL}
+  api_key_env: OPENAI_API_KEY
+  temperature: 0.0
+  max_output_tokens: 4096
+  request_timeout_seconds: 180
+  max_api_retries: 3
+workspace:
+  root: ../examples/verification_bench/full_fix
+planning:
+  mode: static
+  initial_plan:
+    min_tasks: 1
+    max_tasks: 1
+    max_protocol_retries: 2
+  execution:
+    max_project_sessions: 4
+    max_sessions_per_task: 2
+    max_project_seconds: 480
+    final_verification_command: []
+state:
+  root: ../.runs/projects
+  atomic_write: true
+verification:
+  mode: disabled
+agent:
+  max_steps: 20
+  max_consecutive_errors: 5
+  max_session_seconds: 180
+  terminal_grace_turns: 1
+  protocol_retries_per_step: 2

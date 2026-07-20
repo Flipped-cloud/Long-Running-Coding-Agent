@@ -2,6 +2,7 @@ from pathlib import Path
 
 from longrun_agent.config import ToolsConfig
 from longrun_agent.protocol import ToolCall
+from longrun_agent.tools.arguments import render_command
 from longrun_agent.tools.base import ToolContext
 from longrun_agent.tools.bash import BashTool
 from longrun_agent.tools.read_file import ReadFileTool
@@ -42,5 +43,5 @@ def test_bash_returns_normalized_command_and_verification_kind(tmp_path: Path):
     )
 
     assert result.success
-    assert result.metadata["normalized_command"] == "python -c print('ok')"
+    assert result.metadata["normalized_command"] == render_command(["python", "-c", "print('ok')"])
     assert "combined_artifact" in result.metadata

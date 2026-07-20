@@ -8,7 +8,12 @@ from typing import Any
 from longrun_agent.config import load_config
 from longrun_agent.evaluation.adapter import TaskAdapter
 from longrun_agent.evaluation.attribution import FailureAttributor
-from longrun_agent.evaluation.reporting import read_trial_results, write_evaluation_report
+from longrun_agent.evaluation.reporting import (
+    append_trial_attempt,
+    normalize_trial_result_store,
+    upsert_trial_result,
+    write_evaluation_report,
+)
 from longrun_agent.evaluation.schema import (
     EVALUATION_SEMANTICS_VERSION,
     EvaluationManifest,
@@ -35,6 +40,7 @@ class EvaluationCoordinator:
         self.preserve_workspaces = preserve_workspaces
         self.evaluation_dir = manifest.output_root / manifest.evaluation_id
         self.results_path = self.evaluation_dir / "trials.jsonl"
+        self.attempts_path = self.evaluation_dir / "trial_attempts.jsonl"
         self.events_path = self.evaluation_dir / "events.jsonl"
 
     def expand_trials(self) -> list[tuple[EvaluationTaskCase, Path, TrialDescriptor]]:
@@ -62,7 +68,8 @@ class EvaluationCoordinator:
         self.evaluation_dir.mkdir(parents=True, exist_ok=True)
         self._event("evaluation_started", evaluation_id=self.manifest.evaluation_id)
         _assert_semantics_compatible(self.results_path)
-        existing = {item.descriptor.trial_id: item for item in read_trial_results(self.results_path)}
+        canonical = normalize_trial_result_store(self.results_path, self.attempts_path)
+        existing = {item.descriptor.trial_id: item for item in canonical}
         incompatible = [
             item.descriptor.trial_id
             for item in existing.values()
@@ -79,8 +86,19 @@ class EvaluationCoordinator:
             if prior and prior.descriptor.status == TrialStatus.COMPLETED:
                 self._event("trial_resumed", trial_id=descriptor.trial_id, status="already_completed")
                 continue
+            from longrun_agent.state.schema import utc_now
+
+            started_at = utc_now()
             result = self._run_trial(case, config_path, descriptor)
-            self._append_result(result)
+            finished_at = utc_now()
+            append_trial_attempt(
+                self.attempts_path,
+                result,
+                started_at=started_at,
+                finished_at=finished_at,
+                retry_reason="retry_after_error" if prior and prior.descriptor.status == TrialStatus.ERROR else None,
+            )
+            upsert_trial_result(self.results_path, result)
             results = [item for item in results if item.descriptor.trial_id != descriptor.trial_id]
             results.append(result)
             if result.error and not self.continue_on_case_error:
@@ -165,11 +183,6 @@ class EvaluationCoordinator:
             if not self.preserve_workspaces and descriptor.status == TrialStatus.COMPLETED:
                 shutil.rmtree(descriptor.trial_dir / "workspace", ignore_errors=True)
 
-    def _append_result(self, result: TrialResult) -> None:
-        self.results_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.results_path.open("a", encoding="utf-8") as handle:
-            handle.write(result.model_dump_json() + "\n")
-
     def _event(self, event_type: str, **payload: Any) -> None:
         from longrun_agent.state.schema import utc_now
 
@@ -223,10 +236,13 @@ def _allowed_event_paths(trial_dir: Path) -> list[Path]:
 def _assert_semantics_compatible(path: Path) -> None:
     if not path.exists():
         return
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line.strip():
             continue
-        payload = json.loads(line)
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid evaluation JSONL at {path}:{line_number}: {exc}") from exc
         status = (payload.get("descriptor") or {}).get("status")
         version = (payload.get("metadata") or {}).get("evaluation_semantics_version")
         if status == TrialStatus.COMPLETED.value and version != EVALUATION_SEMANTICS_VERSION:

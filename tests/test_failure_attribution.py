@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from longrun_agent.evaluation.attribution import FailureAttributor
-from longrun_agent.evaluation.failure_taxonomy import FailureCode, termination_reason_from_status
-from longrun_agent.evaluation.schema import TerminationReason, TrajectoryFeatures
+from longrun_agent.evaluation.failure_taxonomy import FAILURE_LAYERS, FailureCode, termination_reason_from_status
+from longrun_agent.evaluation.schema import FailureLayer, TerminationReason, TrajectoryFeatures
 
 
 def test_completion_false_positive_and_infrastructure_rules() -> None:
@@ -78,3 +78,9 @@ def test_oracle_failure_drives_false_completion_and_regression_attribution() -> 
     assert attribution.primary_code == FailureCode.COMPLETION_PREMATURE_REQUEST
     assert FailureCode.VERIFICATION_FALSE_POSITIVE in attribution.secondary_codes
     assert FailureCode.IMPLEMENTATION_REGRESSION in attribution.secondary_codes
+
+
+def test_tool_argument_failure_codes_use_tool_aci_layer() -> None:
+    assert FAILURE_LAYERS[FailureCode.TOOL_ARGUMENT_NORMALIZED] == FailureLayer.TOOL_ACI
+    assert FAILURE_LAYERS[FailureCode.TOOL_INVALID_ARGUMENT] == FailureLayer.TOOL_ACI
+    assert FAILURE_LAYERS[FailureCode.TOOL_INTERNAL_ERROR] == FailureLayer.TOOL_ACI

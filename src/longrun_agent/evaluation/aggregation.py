@@ -6,10 +6,11 @@ from collections import Counter, defaultdict
 from typing import Any
 
 from longrun_agent.evaluation.metrics import trial_metrics
-from longrun_agent.evaluation.schema import TrialResult, TrialStatus
+from longrun_agent.evaluation.schema import TrialResult, TrialStatus, latest_trial_results
 
 
 def aggregate_results(results: list[TrialResult]) -> dict[str, Any]:
+    results = latest_trial_results(results)
     completed = [item for item in results if item.descriptor.status == TrialStatus.COMPLETED and item.outcome is not None]
     groups: dict[str, dict[str, list[TrialResult]]] = {
         "task": defaultdict(list),

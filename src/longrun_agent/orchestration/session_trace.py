@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from longrun_agent.protocol import RunResult, ToolCall, ToolResult
+from longrun_agent.tools.bash import BashArgs
 
 
 def _append_unique(items: list[str], value: str | None) -> None:
@@ -70,7 +71,13 @@ class SessionTrace:
     _last_successful_verification_index: int = 0
 
     def call_key(self, call: ToolCall) -> str:
-        return f"{call.name}:{json.dumps(call.arguments, sort_keys=True)}"
+        arguments = call.arguments
+        if call.name == "bash":
+            try:
+                arguments = BashArgs.model_validate(arguments).model_dump(exclude_none=True)
+            except (TypeError, ValueError):
+                pass
+        return f"{call.name}:{json.dumps(arguments, sort_keys=True, default=_unsupported_argument)}"
 
     def should_suppress(self, call: ToolCall) -> bool:
         return self._last_call_key == self.call_key(call)
@@ -105,10 +112,10 @@ class SessionTrace:
                 self._last_write_index = self._op_index
                 self._reset_read_only_streak()
         elif call.name == "bash":
-            command = str(result.metadata.get("command") or call.arguments.get("command") or " ".join(call.arguments.get("argv") or []))
+            command = str(result.metadata.get("command") or "")
             _append_unique(self.bash_commands, command)
-            argv = result.metadata.get("argv") or call.arguments.get("argv") or []
-            if not isinstance(argv, list):
+            argv = result.metadata.get("argv") or []
+            if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
                 argv = []
             if result.metadata.get("unsupported_shell_syntax"):
                 self.unsupported_shell_syntax_count += 1
@@ -231,6 +238,10 @@ class SessionTrace:
 def _is_read_only_bash(command: str) -> bool:
     first = command.strip().split(maxsplit=1)[0].lower() if command.strip() else ""
     return first in {"ls", "dir", "find", "grep", "rg", "cat", "type", "pwd", "python"} and not _is_verification_command(command)
+
+
+def _unsupported_argument(value: Any) -> dict[str, str]:
+    return {"unsupported_type": type(value).__name__}
 
 
 def _is_verification_command(command: str) -> bool:

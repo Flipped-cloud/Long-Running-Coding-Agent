@@ -279,6 +279,27 @@ class TrialResult(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class TrialAttempt(BaseModel):
+    evaluation_id: str
+    trial_id: str
+    attempt_number: int = Field(ge=1)
+    status: TrialStatus
+    error: str | None = None
+    started_at: str
+    finished_at: str
+    retry_reason: str | None = None
+    outcome_present: bool
+    result_fingerprint: str
+    result: TrialResult
+
+
+def latest_trial_results(results: list[TrialResult]) -> list[TrialResult]:
+    latest: dict[str, TrialResult] = {}
+    for result in results:
+        latest[result.descriptor.trial_id] = result
+    return list(latest.values())
+
+
 def load_evaluation_manifest(path: Path) -> EvaluationManifest:
     payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     base = path.resolve().parent

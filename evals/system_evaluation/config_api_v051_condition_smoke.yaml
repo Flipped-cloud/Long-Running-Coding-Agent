@@ -1,0 +1,26 @@
+evaluation_id: api-v051-condition-smoke
+task_cases:
+- case_id: full_fix
+  adapter: local_project
+  fixture: ../../examples/verification_bench/full_fix
+  task_file: TASK.md
+  contract_path: ../../examples/verification_bench/contracts/full_fix.yaml
+agent_configs:
+- config_id: completion_only
+  mode: completion_only
+  path: ../../configs/api_v051_completion_only.yaml
+- config_id: legacy_command
+  mode: legacy_command
+  path: ../../configs/api_v051_legacy_command.yaml
+- config_id: contract
+  mode: contract
+  path: ../../configs/api_v051_contract.yaml
+trial_count: 1
+seeds:
+- 0
+budgets:
+  max_project_sessions: 4
+reset_policy: per_trial
+verification_policy: contract
+output_root: ../../.runs/evaluations
+shared_knowledge: false

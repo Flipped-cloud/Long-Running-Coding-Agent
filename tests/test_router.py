@@ -18,4 +18,5 @@ def test_router_argument_validation(tmp_path: Path):
     ctx = ToolContext(workspace=tmp_path, artifacts_dir=tmp_path, config=ToolsConfig())
     result = ToolRouter([ReadFileTool()]).execute(AgentToolCall(call_id="c1", tool_name="read_file", arguments={}), ctx)
     assert not result.success
-    assert result.error_type == ErrorType.PROTOCOL
+    assert result.error_type == ErrorType.INVALID_TOOL_ARGUMENTS
+    assert result.retryable is True

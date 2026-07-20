@@ -13,6 +13,8 @@ class ErrorType(StrEnum):
     PROTOCOL = "protocol_error"
     POLICY_GATE = "policy_gate"
     TOOL = "tool_error"
+    INVALID_TOOL_ARGUMENTS = "invalid_tool_arguments"
+    TOOL_INTERNAL = "tool_internal_error"
     ENVIRONMENT = "environment_observation"
 
 
@@ -72,6 +74,7 @@ class ToolResult(BaseModel):
     artifact_path: str | None = None
     error_type: ErrorType | None = None
     error_message: str | None = None
+    retryable: bool = False
 
 
 class ModelResponse(BaseModel):

@@ -32,6 +32,8 @@ from longrun_agent.state.selector import TaskSelector
 from longrun_agent.state.store import ProjectStateStore
 from longrun_agent.state.transitions import StateTransitionController
 from longrun_agent.telemetry.project_logger import ProjectLogger
+from longrun_agent.tools.arguments import render_command
+from longrun_agent.tools.bash import BashArgs
 from longrun_agent.tools.router import ToolRouter
 from longrun_agent.verification.contract import load_contract
 from longrun_agent.verification.gateway import VerificationGateway
@@ -1628,6 +1630,10 @@ def _dedupe(items: list[str]) -> list[str]:
 
 
 def _is_verification_tool_call(arguments: dict) -> bool:
-    command = str(arguments.get("command") or " ".join(arguments.get("argv") or []))
+    try:
+        parsed = BashArgs.model_validate(arguments)
+    except (TypeError, ValueError):
+        return False
+    command = parsed.command or render_command(parsed.argv or [])
     lowered = command.lower()
     return "pytest" in lowered or " validate" in f" {lowered} " or " test" in f" {lowered} "

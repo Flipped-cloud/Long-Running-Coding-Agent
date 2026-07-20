@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from longrun_agent.evaluation.coordinator import EvaluationCoordinator
-from longrun_agent.evaluation.reporting import read_trial_results
+from longrun_agent.evaluation.reporting import read_trial_attempts, read_trial_results
 from longrun_agent.evaluation.schema import (
     AdapterVerificationResult,
     AgentConfigReference,
@@ -13,6 +13,7 @@ from longrun_agent.evaluation.schema import (
     EvaluationTaskCase,
     ProgressSnapshot,
     TerminationReason,
+    TrialStatus,
 )
 
 
@@ -129,3 +130,45 @@ def test_coordinator_isolates_resumes_and_continues_after_trial_error(tmp_path: 
 
     coordinator.run()
     assert adapter.runs == 3
+    assert len(read_trial_results(coordinator.results_path)) == 2
+    assert len(coordinator.results_path.read_text(encoding="utf-8").splitlines()) == 2
+    assert len(read_trial_attempts(coordinator.attempts_path)) == 3
+
+
+class RecoveringAdapter(FakeAdapter):
+    def run_agent(self, case, config_path, seed, descriptor):
+        self.runs += 1
+        if self.runs == 1:
+            raise RuntimeError("first attempt fails")
+        return {"project_id": descriptor.trial_id}
+
+
+def test_coordinator_retries_error_with_upsert_and_skips_completed_resume(tmp_path: Path) -> None:
+    manifest = EvaluationManifest(
+        evaluation_id="resume",
+        task_cases=[EvaluationTaskCase(case_id="recover")],
+        agent_configs=[AgentConfigReference(config_id="config", path=tmp_path / "config.yaml")],
+        output_root=tmp_path,
+    )
+    adapter = RecoveringAdapter()
+    coordinator = EvaluationCoordinator(manifest, {"local_project": adapter})
+
+    first = coordinator.run()
+    assert first["trial_count"] == 1
+    assert first["error_count"] == 1
+
+    second = coordinator.run()
+    assert second["trial_count"] == 1
+    assert second["completed_count"] == 1
+    assert second["error_count"] == 0
+    assert adapter.runs == 2
+    assert len(coordinator.results_path.read_text(encoding="utf-8").splitlines()) == 1
+    assert read_trial_results(coordinator.results_path)[0].descriptor.status == TrialStatus.COMPLETED
+    attempts = read_trial_attempts(coordinator.attempts_path)
+    assert len(attempts) == 2
+    assert attempts[1].retry_reason == "retry_after_error"
+
+    coordinator.run()
+    assert adapter.runs == 2
+    assert len(coordinator.results_path.read_text(encoding="utf-8").splitlines()) == 1
+    assert len(read_trial_attempts(coordinator.attempts_path)) == 2

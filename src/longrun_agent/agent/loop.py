@@ -273,6 +273,7 @@ class AgentLoop:
                 )
                 self._emit("tool_started", {"step": step, "tool": call.name})
                 result = self.router.execute(call, context)
+                self._record_argument_normalizations(logger, step, call, result)
                 if result.success:
                     consecutive_errors = 0
                 elif result.error_type not in {ErrorType.ENVIRONMENT, ErrorType.POLICY_GATE}:
@@ -389,6 +390,7 @@ class AgentLoop:
                             sanitized_arguments=call.arguments,
                         )
                         result = self.router.execute(call, context)
+                        self._record_argument_normalizations(logger, grace_step, call, result)
                         if result.error_type == ErrorType.PROTOCOL:
                             protocol_error_count += 1
                             if result.metadata.get("unsupported_shell_syntax"):
@@ -603,10 +605,45 @@ class AgentLoop:
             "role": "assistant",
             "content": None,
             "tool_calls": [
-                {"id": call.id, "type": "function", "function": {"name": call.name, "arguments": json.dumps(call.arguments)}}
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": call.name,
+                        "arguments": json.dumps(
+                            call.arguments,
+                            default=lambda value: {"unsupported_type": type(value).__name__},
+                        ),
+                    },
+                }
                 for call in response.tool_calls
             ],
         }
+
+    def _record_argument_normalizations(self, logger: EventLogger, step: int, call, result) -> None:
+        for normalization in result.metadata.get("argument_normalizations") or []:
+            payload = {
+                "run_id": self.run_id,
+                "step": step,
+                "tool_name": call.name,
+                "tool_call_id": call.id,
+                "field": normalization["field"],
+                "index": normalization["index"],
+                "original_type": normalization["original_type"],
+                "normalized_type": normalization["normalized_type"],
+                "reason": normalization["reason"],
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+            logger.log(
+                step,
+                "tool_arguments_normalized",
+                action_type="tool_arguments",
+                tool_call_id=call.id,
+                tool_name=call.name,
+                success=True,
+                payload=payload,
+            )
+            self._emit("tool_arguments_normalized", payload)
 
     def _emit(self, event_type: str, payload: dict[str, Any]) -> None:
         if self.on_event:

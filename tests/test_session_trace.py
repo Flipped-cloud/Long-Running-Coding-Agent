@@ -86,3 +86,32 @@ def test_unsupported_shell_syntax_sets_recoverable_action_message() -> None:
 
     assert trace.unsupported_shell_syntax_count == 1
     assert "retry the same intended command once using argv" in (trace.action_required_message or "")
+
+
+def test_invalid_raw_bash_argv_does_not_break_trace() -> None:
+    trace = SessionTrace()
+    call = ToolCall(id="bad", name="bash", arguments={"argv": ["echo", {"bad": 3}]})
+
+    trace.record(
+        call,
+        ToolResult(
+            tool_call_id="bad",
+            tool_name="bash",
+            success=False,
+            summary="invalid arguments for bash",
+            error_type=ErrorType.INVALID_TOOL_ARGUMENTS,
+            retryable=True,
+        ),
+    )
+
+    assert trace.bash_observations[0].command == ""
+    assert trace.bash_observations[0].argv == []
+
+
+def test_bash_call_key_uses_normalized_argv() -> None:
+    trace = SessionTrace()
+
+    numeric = trace.call_key(ToolCall(id="numeric", name="bash", arguments={"argv": ["find", ".", 3]}))
+    string = trace.call_key(ToolCall(id="string", name="bash", arguments={"argv": ["find", ".", "3"]}))
+
+    assert numeric == string

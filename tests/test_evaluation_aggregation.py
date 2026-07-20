@@ -116,3 +116,13 @@ def test_aggregate_omits_metric_when_all_values_are_none() -> None:
     metrics = report["overall"]["all"]["metrics"]
 
     assert "time_to_first_progress" not in metrics
+
+
+def test_aggregate_uses_only_latest_result_for_duplicate_trial_id() -> None:
+    old = _trial(trial_id="duplicate", progress=0.5, with_first_progress=True)
+    latest = _trial(trial_id="duplicate", progress=1.0, with_first_progress=True)
+
+    report = aggregate_results([old, latest])
+
+    assert report["overall"]["all"]["count"] == 1
+    assert report["trial"]["duplicate"]["count"] == 1

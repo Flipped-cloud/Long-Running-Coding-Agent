@@ -10,6 +10,16 @@ def test_protocol_serialization_roundtrip():
     result = ToolResult(tool_call_id="c1", tool_name="read_file", success=True, summary="ok")
     assert ToolResult.model_validate(result.model_dump()).summary == "ok"
 
+    retryable = ToolResult(
+        tool_call_id="c2",
+        tool_name="bash",
+        success=False,
+        summary="invalid",
+        error_type="invalid_tool_arguments",
+        retryable=True,
+    )
+    assert ToolResult.model_validate_json(retryable.model_dump_json()).retryable is True
+
     event = EventRecord(
         event_id="e1",
         run_id="r1",

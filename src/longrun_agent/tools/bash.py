@@ -8,9 +8,10 @@ import subprocess
 import sys
 import time
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 from longrun_agent.protocol import ErrorType, ToolResult
+from longrun_agent.tools.arguments import normalize_command_argv, render_command
 from longrun_agent.tools.base import BaseTool, ToolContext
 from longrun_agent.tools.path_guard import ensure_workspace_root, is_inside_path
 
@@ -21,12 +22,20 @@ class BashArgs(BaseModel):
     cwd: str = "."
     timeout: int | None = Field(default=None, ge=1)
 
+    @field_validator("argv", mode="before")
+    @classmethod
+    def normalize_argv(cls, value, info: ValidationInfo):
+        if value is None:
+            return None
+        normalized, records = normalize_command_argv(value)
+        if isinstance(info.context, dict):
+            info.context.setdefault("argument_normalizations", []).extend(records)
+        return normalized
+
     @model_validator(mode="after")
     def require_command_or_argv(self) -> BashArgs:
         if self.argv is None and not self.command:
             raise ValueError("bash requires either argv or command")
-        if self.argv is not None and not self.argv:
-            raise ValueError("bash argv must not be empty")
         return self
 
 
@@ -86,7 +95,7 @@ def _split_command(command: str, shell: bool) -> list[str] | str:
 
 def _display_command(arguments: BashArgs) -> str:
     if arguments.argv is not None:
-        return " ".join(arguments.argv)
+        return render_command(arguments.argv)
     return arguments.command or ""
 
 
@@ -132,7 +141,7 @@ class BashTool(BaseTool):
 
     def execute(self, call_id: str, arguments: BashArgs, context: ToolContext) -> ToolResult:
         command = _display_command(arguments)
-        normalized_command = " ".join(command.split())
+        normalized_command = command if arguments.argv is not None else " ".join(command.split())
         try:
             cwd = _resolve_cwd(context.workspace, arguments.cwd)
         except Exception as exc:
