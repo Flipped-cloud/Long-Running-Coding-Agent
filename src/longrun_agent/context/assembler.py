@@ -48,6 +48,8 @@ def render_task_anchor(seed: TaskContextSeed) -> str:
         lines.extend(["Current touched files:", *[f"- {path}" for path in seed.files_touched[-10:]]])
     if seed.knowledge_context:
         lines.extend(["Retrieved knowledge:", seed.knowledge_context])
+    if seed.pinned_protocol:
+        lines.extend(["Pinned protocol requirements:", *seed.pinned_protocol])
     return "\n".join(lines)
 
 
@@ -81,6 +83,8 @@ def render_current_instruction(seed: TaskContextSeed, *, repeat_anchor: bool) ->
                 *[f"- {criterion}" for criterion in seed.acceptance_criteria[:5]],
             ]
         )
+    if seed.final_protocol_reminders:
+        lines.extend(["Final protocol checklist:", *seed.final_protocol_reminders])
     return "\n".join(lines)
 
 

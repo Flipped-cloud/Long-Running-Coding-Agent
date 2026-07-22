@@ -32,15 +32,33 @@ flowchart TD
 - Fake provider for deterministic tests and demos.
 - Structured protocol: `ToolCall`, `FinalAnswer`, `ToolResult`, `ModelResponse`, `RunResult`.
 - Workspace-restricted `read_file`, `write_file`, and `bash`.
+- Linux/WSL2 Bubblewrap isolation for evaluation bash execution and hidden-contract protection.
 - JSONL telemetry under `.runs/<run_id>/`.
 - CLI entry points for running the agent and listing tools.
 - A toy calculator repository that the fake provider can repair.
 - v0.2 project orchestration with external task state, coarse planning, deterministic task selection, as-needed decomposition, bounded recovery candidate selection, and resume.
 - v0.4 evidence-grounded episodic memory and verified procedural skills, gated by deterministic evidence and exposed through explicit knowledge-use telemetry.
+- v0.5 contract verification, hidden checks, offline oracle evaluation, generated-test validation, and failure attribution.
+
+## v0.5.5 Full-System Architecture
+
+The current full-system path connects the production modules in one run:
+
+```text
+Fake or OpenAI-compatible Provider
+  -> ProjectOrchestrator with adaptive_search planning and resume
+  -> AgentLoop with workspace-safe read_file/write_file/bash
+  -> structured_reset context lifecycle
+  -> memory_skill KnowledgeStore episodes/retrieval/use telemetry
+  -> frozen VerificationContract and isolated VerificationReport
+  -> ProjectState, session JSONL, telemetry, and metrics under .runs/
+```
+
+`configs/full_system.yaml` is the deterministic integration config. It defaults to the fake provider, uses the existing `examples/verification_bench/full_fix` fixture and contract, and writes state/telemetry/knowledge under `.runs/full_system/`. It is safe to load without an API key.
 
 ## v0.2 State-Grounded Adaptive Planning
 
-v0.2 adds a deterministic orchestration layer around the v0.1 Agent Loop. It studies external state and planning only; it still does not add memory, skills, context compaction, verification gates, handoff, or multi-agent execution.
+v0.2 added a deterministic orchestration layer around the v0.1 Agent Loop. In that historical slice it studied external state and planning only; current v0.5.5 runs can also enable context lifecycle, knowledge, skills, and verification.
 
 Project / Task / Session:
 
@@ -161,7 +179,7 @@ $env:MODEL_NAME="your-model"
 $env:OPENAI_BASE_URL="https://your-compatible-endpoint/v1"
 ```
 
-`configs/baseline.yaml` uses the real OpenAI-compatible provider. `configs/fake.yaml` uses the deterministic fake provider and does not require an API key.
+`configs/baseline.yaml` uses the real OpenAI-compatible provider. `configs/fake.yaml` uses the deterministic fake provider and does not require an API key. `configs/full_system.yaml` also uses the fake provider by default. Real API configs use `${MODEL_NAME}`, `${OPENAI_BASE_URL}`, and the configured API-key environment variable; fake configs ignore API keys and should be the default for tests, demos, and CI.
 
 ## Fake Provider Demo
 
@@ -177,6 +195,28 @@ write_file("calculator.py", fixed implementation)
 bash("python -m pytest -q")
 FinalAnswer
 ```
+
+## Five-Minute Fake Demo
+
+```bash
+python -m pip install -e ".[dev]"
+python examples/toy_repo/reset_repo.py
+longrun-agent run \
+  --config configs/fake.yaml \
+  --fake-provider \
+  --task "Fix the implementation bug in calculator.py so that all tests pass."
+pytest -q examples/toy_repo/tests
+```
+
+This path is deterministic and does not read `OPENAI_API_KEY`.
+
+## Full-System Demo
+
+```bash
+bash scripts/run_full_system_demo.sh
+```
+
+The demo loads `configs/full_system.yaml`, copies the existing verification fixture into `.runs/full_system_demo/workspaces/<project-id>`, runs a fake scripted project through planning, context lifecycle, knowledge episode capture, contract verification, telemetry, and resume, then prints the result directory. It uses a unique project id by default and does not delete existing `.runs` content.
 
 ## Real API Demo
 
@@ -433,6 +473,7 @@ Every JSONL line is a standalone event with step, event type, model name, action
 - All file paths are resolved through `Path.resolve()` and checked against the workspace root with `os.path.commonpath`.
 - Empty paths, parent traversal, absolute paths outside the workspace, and symlink escapes are rejected.
 - `bash` runs with a fixed workspace cwd, captures stdout/stderr, applies timeouts, and saves full output artifacts.
+- In Linux/WSL2 evaluation isolation, `bash` can run through Bubblewrap with denied roots and private marker filtering.
 - Obvious destructive commands such as `rm -rf /`, `shutdown`, `reboot`, `mkfs`, and destructive absolute-path operations are rejected.
 - Non-zero command exit codes are environment observations, not provider failures.
 
@@ -440,27 +481,54 @@ Every JSONL line is a standalone event with step, event type, model name, action
 
 ```bash
 pytest -q
-pytest --cov=longrun_agent --cov-report=term-missing
+pytest -q --cov=longrun_agent --cov-report=term-missing --cov-fail-under=90
 python -m compileall -q src tests scripts
 ruff check .
 ruff format --check .
 git diff --check
 ```
 
+Focused integration and sandbox checks:
+
+```bash
+pytest -q tests/test_full_system_integration.py
+pytest -q tests/test_workspace_security.py tests/test_bash_tool.py -rs
+```
+
+Formal local experiment entry points:
+
+```bash
+longrun-agent eval experience-learning --config evals/experience_learning/config.yaml
+longrun-agent eval run --manifest evals/system_evaluation/config.yaml
+longrun-agent eval report --evaluation-id local-system-v051-oracle
+```
+
+## Linux/WSL Bubblewrap
+
+Native evaluation isolation requires Linux or WSL2 with Bubblewrap and unprivileged user namespaces:
+
+```bash
+sudo apt-get install bubblewrap
+unshare -Ur true
+longrun-agent sandbox doctor --config configs/full_system.yaml
+```
+
+Windows can run most deterministic tests, but native Bubblewrap coverage is enforced in Linux CI.
+
+## Repository Hygiene
+
+Do not commit `.runs/`, `.coverage`, `coverage.xml`, `htmlcov/`, `*.log`, `.env`, API keys, hidden contracts, oracle private data, or generated cache files. Hidden verification assets must remain outside the agent workspace and out of prompts, agent-visible telemetry, and commits.
+
 ## Known Limits
 
-- The bash safety layer is minimal and is not a container sandbox.
 - Windows native execution is supported for tests, but Linux/WSL2 is the preferred target.
 - The runtime does not treat a plain final answer as project task completion.
 - `write_file` is whole-file only; patch/edit tools are intentionally out of scope.
-- v0.2 candidate completion is planning-level only and is not externally verified.
+- `candidate_complete` and `verified` remain distinct; contract mode requires a frozen `VerificationReport` before a project becomes `verified`.
 - v0.3 context compaction is conservative and task-local.
 - v0.3 context probes evaluate the context harness only; they are not a full RULER benchmark and do not evaluate the whole Coding Agent.
 - Bounded planning search evaluates one level of recovery candidates; it is not full ToT search.
 
-## Next Stage
-
-The next topic should be Verification or Memory. Memory, skills, vector retrieval, and multi-agent orchestration remain deliberately excluded from v0.3.
 ## v0.5: Contract Verification and Trajectory Evaluation
 
 v0.5 separates an Agent's completion claim from independent acceptance. A `FinalAnswer` is conversational output, a `CompletionCandidate` records public evidence, and only a frozen `VerificationContract` plus a persisted `VerificationReport` can produce `VERIFIED` in contract mode.

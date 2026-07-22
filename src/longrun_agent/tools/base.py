@@ -7,6 +7,8 @@ from pydantic import BaseModel
 
 from longrun_agent.config import ToolsConfig
 from longrun_agent.protocol import ToolResult
+from longrun_agent.tools.sandbox import SubprocessSandbox, build_subprocess_sandbox
+from longrun_agent.tools.workspace_policy import WorkspaceAccessPolicy
 
 
 class ToolContext:
@@ -19,6 +21,8 @@ class ToolContext:
         artifacts_dir: Path | None = None,
         control_channel: Any | None = None,
         knowledge_channel: Any | None = None,
+        workspace_policy: WorkspaceAccessPolicy | None = None,
+        subprocess_sandbox: SubprocessSandbox | None = None,
     ):
         artifacts = artifacts_dir or tool_outputs_dir or workspace / ".runs" / "tool_outputs"
         self.workspace = workspace
@@ -27,6 +31,8 @@ class ToolContext:
         self.config = config or ToolsConfig()
         self.control_channel = control_channel
         self.knowledge_channel = knowledge_channel
+        self.workspace_policy = workspace_policy or WorkspaceAccessPolicy.for_workspace(workspace)
+        self.subprocess_sandbox = subprocess_sandbox or build_subprocess_sandbox(self.workspace_policy)
         self.tool_outputs_dir.mkdir(parents=True, exist_ok=True)
         self.diffs_dir.mkdir(parents=True, exist_ok=True)
 

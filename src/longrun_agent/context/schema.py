@@ -90,6 +90,8 @@ class TaskContextSeed(BaseModel):
     latest_handoff_id: str | None = None
     knowledge_context: str | None = None
     knowledge_retrieval_id: str | None = None
+    pinned_protocol: list[str] = Field(default_factory=list)
+    final_protocol_reminders: list[str] = Field(default_factory=list)
 
 
 class ContextPreparationAction(StrEnum):

@@ -24,7 +24,7 @@ def write_evaluation_report(evaluation_dir: Path, results: list[TrialResult]) ->
         "aggregate": aggregate,
     }
     evaluation_dir.mkdir(parents=True, exist_ok=True)
-    (evaluation_dir / "report.json").write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    _atomic_write_text(evaluation_dir / "report.json", json.dumps(payload, indent=2, sort_keys=True))
     return payload
 
 
@@ -168,6 +168,33 @@ def _write_trial_results(path: Path, results: list[TrialResult]) -> None:
             temporary_path = Path(handle.name)
             for result in results:
                 handle.write(result.model_dump_json() + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+
+
+def write_trial_results_atomic(path: Path, results: list[TrialResult]) -> None:
+    _write_trial_results(path, latest_trial_results(results))
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary_path, path)

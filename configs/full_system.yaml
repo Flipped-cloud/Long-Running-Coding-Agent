@@ -1,0 +1,85 @@
+model:
+  provider: fake
+  model_name: fake-scripted
+  base_url: null
+  api_key_env: MODEL_API_KEY
+  temperature: 0.0
+  max_output_tokens: 2048
+  request_timeout_seconds: 30
+  max_api_retries: 1
+
+agent:
+  max_steps: 5
+  max_consecutive_errors: 3
+  max_session_seconds: 180
+  terminal_grace_turns: 1
+  protocol_retries_per_step: 2
+
+workspace:
+  root: ../examples/verification_bench/full_fix
+
+tools:
+  read_file: {max_lines: 200, max_chars: 30000}
+  write_file: {max_chars: 200000, save_diff: true}
+  bash: {timeout_seconds: 60, max_output_chars: 20000, shell: false}
+
+telemetry:
+  run_root: ../.runs/full_system/telemetry
+  save_prompts: true
+  save_full_tool_outputs: true
+
+planning:
+  mode: adaptive_search
+  initial_plan:
+    min_tasks: 1
+    max_tasks: 1
+    max_protocol_retries: 2
+  execution:
+    max_project_sessions: 4
+    attempts_before_decomposition: 1
+    max_project_seconds: 240
+    max_sessions_per_task: 3
+    max_no_progress_sessions: 1
+    final_verification_command: []
+    final_verification_timeout_seconds: 60
+  decomposition: {max_depth: 2, min_children: 2, max_children: 3, max_protocol_retries: 2}
+  bounded_search: {enabled: true, candidate_count: 3, max_protocol_retries: 2}
+
+state:
+  root: ../.runs/full_system/projects
+  atomic_write: true
+
+context:
+  mode: structured_reset
+  model_context_limit: 4096
+  reserve_output_tokens: 512
+  safety_margin_tokens: 256
+  trigger_ratio: 0.20
+  hard_stop_ratio: 0.95
+  recent_full_turns: 4
+  repeat_task_anchor_at_end: true
+  structured_handoff:
+    enabled: true
+    use_model: false
+    fallback_deterministic: true
+
+knowledge:
+  mode: memory_skill
+  root: ../.runs/full_system/knowledge
+  strict_errors: true
+  episode: {save_all_sessions: true, max_evidence_items: 40}
+  reflection: {enabled: false}
+  memory: {max_retrieved: 4, max_context_tokens: 1800, minimum_retrieval_score: 0.25}
+  skill: {enabled: true, max_retrieved: 3, max_context_tokens: 2200, auto_execute: false}
+
+verification:
+  mode: contract
+  store_root: ../.runs/full_system/projects
+  contract: {source: file, path: ../examples/verification_bench/contracts/full_fix.yaml, freeze_on_project_start: true}
+  execution: {isolation: copy, timeout_seconds: 120, max_parallel_checks: 1, preserve_failed_snapshot: true}
+  policy: {require_project_contract: true, max_task_reopens: 2, max_project_verification_attempts: 3}
+  generated_tests: {enabled: false}
+
+evaluation:
+  enabled: false
+  root: ../.runs/full_system/evaluations

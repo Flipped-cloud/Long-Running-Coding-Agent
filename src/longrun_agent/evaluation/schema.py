@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from longrun_agent.state.schema import utc_now
 
-EVALUATION_SEMANTICS_VERSION = "v0.5.1-runtime-oracle-split"
+EVALUATION_SEMANTICS_VERSION = "v0.5.5-sandbox-attribution"
 
 
 class TrialStatus(StrEnum):

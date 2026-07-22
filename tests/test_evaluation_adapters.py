@@ -10,6 +10,7 @@ from longrun_agent.evaluation.schema import AdapterVerificationResult, Evaluatio
 from longrun_agent.state.schema import ProjectState, ProjectStatus, TaskNode, TaskStatus
 from longrun_agent.state.store import ProjectStateStore
 from longrun_agent.verification.schema import VerificationReport, VerificationSummary, VerificationVerdict
+from longrun_agent.verification.snapshot import CopySnapshotProvider
 from longrun_agent.verification.store import VerificationStore
 
 
@@ -20,7 +21,12 @@ def test_local_adapter_prepares_fixture_and_collects_formal_artifacts(tmp_path: 
     (fixture / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
     (fixture / ".runs").mkdir()
     (fixture / ".runs" / "private.txt").write_text("excluded", encoding="utf-8")
-    case = EvaluationTaskCase(case_id="case", fixture=fixture, contract_path=tmp_path / "contract.yaml")
+    contract_path = tmp_path / "contract.yaml"
+    contract_path.write_text(
+        "contract_id: contract\nproject_id: project\nchecks: []\n",
+        encoding="utf-8",
+    )
+    case = EvaluationTaskCase(case_id="case", fixture=fixture, contract_path=contract_path)
     descriptor = TrialDescriptor(
         evaluation_id="eval",
         case_id="case",
@@ -32,9 +38,17 @@ def test_local_adapter_prepares_fixture_and_collects_formal_artifacts(tmp_path: 
     )
     adapter = LocalProjectAdapter(lambda _config, _case, _seed: None)
     adapter.prepare(case, descriptor)
+    (adapter.workspace(case, descriptor) / "stale.txt").write_text("stale", encoding="utf-8")
+    adapter.prepare(case, descriptor)
+    assert not (adapter.workspace(case, descriptor) / "stale.txt").exists()
+    CopySnapshotProvider(
+        adapter.workspace(case, descriptor),
+        descriptor.trial_dir / "oracle" / "snapshots",
+    ).create_baseline()
+    (adapter.workspace(case, descriptor) / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
 
     assert adapter.objective(case, descriptor) == "Fix the fixture."
-    assert adapter.verification_contract(case, descriptor) == case.contract_path
+    assert adapter.verification_contract(case, descriptor) == adapter.workspace(case, descriptor) / ".longrun" / "agent_contract.json"
     assert not (adapter.workspace(case, descriptor) / ".runs").exists()
 
     state_root = descriptor.trial_dir / "state"
@@ -48,7 +62,7 @@ def test_local_adapter_prepares_fixture_and_collects_formal_artifacts(tmp_path: 
         status=TaskStatus.VERIFIED,
         reopen_count=1,
     )
-    state_store.create(ProjectState(project_id="project", objective="fix", status=ProjectStatus.VERIFIED, tasks=[task]))
+    state_store.create(ProjectState(project_id="project", objective="fix", status=ProjectStatus.ACTIVE, tasks=[task]))
     state_store.append_session(
         "project",
         {
@@ -60,10 +74,38 @@ def test_local_adapter_prepares_fixture_and_collects_formal_artifacts(tmp_path: 
             "context_reset_count": 1,
             "memories_referenced": 1,
             "skills_referenced": 1,
+            "run_status": "completed",
         },
     )
     state_store.events_path("project").write_text(
         json.dumps({"event_type": "task_completion_requested"}) + "\n" + json.dumps({"event_type": "task_reopened"}) + "\n",
+        encoding="utf-8",
+    )
+    telemetry_path = descriptor.trial_dir / "telemetry" / "run" / "events.jsonl"
+    telemetry_path.parent.mkdir(parents=True)
+    telemetry_path.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {
+                    "run_id": "run",
+                    "step": 1,
+                    "event_type": "tool_started",
+                    "tool_call_id": "call-1",
+                    "tool_name": "write_file",
+                },
+                {
+                    "run_id": "run",
+                    "step": 1,
+                    "event_type": "tool_finished",
+                    "tool_call_id": "call-1",
+                    "tool_name": "write_file",
+                    "success": True,
+                    "duration_seconds": 0.1,
+                },
+            ]
+        )
+        + "\n",
         encoding="utf-8",
     )
     report = VerificationReport(
@@ -116,10 +158,15 @@ def test_local_adapter_prepares_fixture_and_collects_formal_artifacts(tmp_path: 
     assert outcome.completion_requests == outcome.false_completion_requests == 1
     assert outcome.task_verified_count == outcome.task_reopened_count == 1
     assert (outcome.input_tokens, outcome.output_tokens, outcome.compactor_tokens) == (10, 4, 2)
-    assert (outcome.knowledge_tokens, outcome.tool_calls, outcome.context_resets) == (3, 5, 1)
+    assert (outcome.knowledge_tokens, outcome.tool_calls, outcome.context_resets) == (3, 1, 1)
     assert [item.source_report_id for item in outcome.progress_snapshots] == ["oracle-report"]
     assert outcome.runtime_verification_report_id == report.report_id
     assert outcome.oracle_verifier_seconds == 0.25
+    artifacts = descriptor.trial_dir / "artifacts"
+    assert json.loads((artifacts / "changed_files.json").read_text(encoding="utf-8"))[0]["path"] == "app.py"
+    assert "VALUE = 2" in (artifacts / "final_workspace_diff.patch").read_text(encoding="utf-8")
+    assert (artifacts / "final_workspace_fingerprint.json").exists()
+    assert json.loads((artifacts / "tool_calls.json").read_text(encoding="utf-8"))[0]["tool_call_id"] == "call-1"
     assert adapter.cleanup(case, descriptor) is None
 
 

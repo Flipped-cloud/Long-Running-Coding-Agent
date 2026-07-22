@@ -7,5 +7,13 @@ __pycache__/
 venv/
 .env
 .runs/
+.coverage
+coverage.xml
+htmlcov/
+*.log
+*.tmp
+*.bak
+*.swp
+*~
 dist/
 build/

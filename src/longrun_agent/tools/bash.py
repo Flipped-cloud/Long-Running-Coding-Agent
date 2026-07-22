@@ -7,13 +7,15 @@ import signal
 import subprocess
 import sys
 import time
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 from longrun_agent.protocol import ErrorType, ToolResult
 from longrun_agent.tools.arguments import normalize_command_argv, render_command
 from longrun_agent.tools.base import BaseTool, ToolContext
-from longrun_agent.tools.path_guard import ensure_workspace_root, is_inside_path
+from longrun_agent.tools.sandbox import SANDBOX_RUNTIME_UNAVAILABLE, EvaluationSandboxRuntimeUnavailable, EvaluationSandboxUnavailable
+from longrun_agent.tools.workspace_policy import ACCESS_DENIED_MESSAGE, WorkspaceAccessDenied
 
 
 class BashArgs(BaseModel):
@@ -108,18 +110,55 @@ def _verification_kind(command: str) -> str | None:
     return None
 
 
-def _resolve_cwd(workspace, requested: str):
-    root = ensure_workspace_root(workspace)
-    raw = os.fspath(requested)
-    path = os.path.normpath(raw or ".")
-    if os.path.isabs(path):
-        raise ValueError("absolute cwd paths are not allowed")
-    candidate = (root / path).resolve(strict=False)
-    if not is_inside_path(candidate, root):
-        raise ValueError("cwd escapes workspace")
-    if not candidate.exists():
-        raise FileNotFoundError(requested)
-    return candidate
+def _is_absolute_path(value: str) -> bool:
+    return Path(value).is_absolute() or PurePosixPath(value.replace("\\", "/")).is_absolute() or PureWindowsPath(value).is_absolute()
+
+
+def _validate_explicit_paths(argv: list[str], cwd: Path, context: ToolContext) -> None:
+    if not argv:
+        return
+    executable = Path(argv[0]).name.lower()
+    skip_next = False
+    for index, raw in enumerate(argv[1:], start=1):
+        if skip_next:
+            skip_next = False
+            continue
+        if executable in {"python", "python3", "py", "python.exe"} and raw == "-c":
+            skip_next = True
+            continue
+        candidate = raw.split("=", 1)[1] if raw.startswith("--") and "=" in raw else raw
+        if candidate.lower().startswith("file://") or ".." in PurePosixPath(candidate.replace("\\", "/")).parts:
+            raise WorkspaceAccessDenied(ACCESS_DENIED_MESSAGE)
+        if _is_absolute_path(candidate) and not _windows_switch(candidate):
+            raise WorkspaceAccessDenied(ACCESS_DENIED_MESSAGE)
+        if _is_path_argument(executable, argv, index, candidate):
+            path = context.workspace_policy.resolve_read(candidate, base=cwd, must_exist=False)
+            if path.exists() and path.is_symlink():
+                context.workspace_policy.resolve_read(candidate, base=cwd, must_exist=True)
+
+
+def _windows_switch(value: str) -> bool:
+    return len(value) == 2 and value.startswith("/") and value[1].isalpha()
+
+
+def _is_path_argument(executable: str, argv: list[str], index: int, value: str) -> bool:
+    if not value or value.startswith("-") or _windows_switch(value):
+        return False
+    direct = {"cat", "head", "tail", "ls", "stat", "cp", "mv", "rm", "rmdir", "diff"}
+    if executable in direct:
+        return True
+    if executable == "find":
+        return index == 1
+    if executable in {"grep", "sed"}:
+        positional = [item for item in argv[1:index] if item and not item.startswith("-")]
+        return bool(positional)
+    if executable in {"pytest", "pytest.exe"}:
+        return "/" in value or "\\" in value or value.endswith(".py")
+    if executable in {"python", "python3", "py", "python.exe"}:
+        if "-m" in argv[:index]:
+            return "pytest" in argv[:index] and ("/" in value or "\\" in value or value.endswith(".py"))
+        return index == 1 and value.endswith(".py")
+    return False
 
 
 def _truncate_stream(name: str, value: str, limit: int) -> tuple[str, bool]:
@@ -142,18 +181,46 @@ class BashTool(BaseTool):
     def execute(self, call_id: str, arguments: BashArgs, context: ToolContext) -> ToolResult:
         command = _display_command(arguments)
         normalized_command = command if arguments.argv is not None else " ".join(command.split())
-        try:
-            cwd = _resolve_cwd(context.workspace, arguments.cwd)
-        except Exception as exc:
+        reason = _reject_reason(command)
+        if reason:
             return ToolResult(
                 tool_call_id=call_id,
                 tool_name=self.name,
                 success=False,
-                summary="bash rejected: cwd escapes workspace",
-                output=str(exc),
+                summary=f"bash rejected: {reason}",
+                output=reason,
                 error_type=ErrorType.TOOL,
-                error_message=str(exc),
-                metadata={"command": command, "normalized_command": normalized_command, "cwd": arguments.cwd},
+                error_message=reason,
+                metadata={"normalized_command": normalized_command},
+            )
+        try:
+            cwd = context.workspace_policy.resolve_cwd(arguments.cwd)
+            argv = arguments.argv if arguments.argv is not None else _split_command(arguments.command or "", context.config.bash.shell)
+            if isinstance(argv, str):
+                raise WorkspaceAccessDenied(ACCESS_DENIED_MESSAGE)
+            _validate_explicit_paths(argv, cwd, context)
+        except WorkspaceAccessDenied:
+            return ToolResult(
+                tool_call_id=call_id,
+                tool_name=self.name,
+                success=False,
+                summary="bash rejected: cwd escapes workspace or command path is outside workspace",
+                output=ACCESS_DENIED_MESSAGE,
+                error_type=ErrorType.WORKSPACE_ACCESS_DENIED,
+                error_message=ACCESS_DENIED_MESSAGE,
+                retryable=True,
+                metadata={"workspace_access_denied": True},
+            )
+        except FileNotFoundError:
+            return ToolResult(
+                tool_call_id=call_id,
+                tool_name=self.name,
+                success=False,
+                summary="bash rejected: cwd does not exist",
+                output="The requested cwd does not exist inside the agent workspace.",
+                error_type=ErrorType.TOOL,
+                error_message="cwd does not exist",
+                retryable=True,
             )
         if not cwd.is_dir():
             return ToolResult(
@@ -188,35 +255,25 @@ class BashTool(BaseTool):
                         "unsupported_shell_syntax": True,
                     },
                 )
-        reason = _reject_reason(command)
-        if reason:
-            return ToolResult(
-                tool_call_id=call_id,
-                tool_name=self.name,
-                success=False,
-                summary=f"bash rejected: {reason}",
-                output=reason,
-                error_type=ErrorType.TOOL,
-                error_message=reason,
-                metadata={"command": command, "normalized_command": normalized_command, "cwd": str(cwd)},
-            )
         timeout = min(arguments.timeout or context.config.bash.timeout_seconds, context.config.bash.timeout_seconds)
         started = time.monotonic()
         timed_out = False
         try:
-            argv = arguments.argv if arguments.argv is not None else _split_command(arguments.command or "", context.config.bash.shell)
             popen_kwargs = {
-                "cwd": cwd,
                 "stdout": subprocess.PIPE,
                 "stderr": subprocess.PIPE,
                 "text": True,
-                "shell": context.config.bash.shell,
             }
             if os.name == "nt":
                 popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
             else:
                 popen_kwargs["preexec_fn"] = os.setsid
-            process = subprocess.Popen(argv, **popen_kwargs)
+            process = context.subprocess_sandbox.popen(
+                argv,
+                cwd=cwd,
+                shell=context.config.bash.shell,
+                **popen_kwargs,
+            )
             try:
                 stdout, stderr = process.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
@@ -237,6 +294,37 @@ class BashTool(BaseTool):
             stderr_output, stderr_truncated = _truncate_stream("STDERR", stderr, stream_limit)
             truncated = stdout_truncated or stderr_truncated
             exit_code = -1 if timed_out else int(process.returncode or 0)
+            infrastructure_failure = context.subprocess_sandbox.classify_process_result(exit_code, stdout, stderr)
+            if infrastructure_failure is not None:
+                return ToolResult(
+                    tool_call_id=call_id,
+                    tool_name=self.name,
+                    success=False,
+                    summary="evaluation sandbox launcher failed",
+                    output=infrastructure_failure.public_message,
+                    metadata={
+                        "command": command,
+                        "normalized_command": normalized_command,
+                        "argv": arguments.argv,
+                        "cwd": str(cwd),
+                        "exit_code": exit_code,
+                        "code_epoch": int(getattr(context, "code_epoch", 0)),
+                        "verification_kind": _verification_kind(command),
+                        "duration_seconds": duration,
+                        "timed_out": timed_out,
+                        "stdout_chars": len(stdout),
+                        "stderr_chars": len(stderr),
+                        "truncated": truncated,
+                        "output_artifact": str(artifact),
+                        "stdout_artifact": str(artifact),
+                        "combined_artifact": str(artifact),
+                        "platform": sys.platform,
+                    },
+                    artifact_path=str(artifact),
+                    error_type=infrastructure_failure.error_type,
+                    error_message=infrastructure_failure.public_message,
+                    retryable=infrastructure_failure.retryable,
+                )
             return ToolResult(
                 tool_call_id=call_id,
                 tool_name=self.name,
@@ -264,6 +352,40 @@ class BashTool(BaseTool):
                 artifact_path=str(artifact),
                 error_type=ErrorType.TOOL if timed_out else None,
                 error_message="command timed out" if timed_out else None,
+            )
+        except WorkspaceAccessDenied:
+            return ToolResult(
+                tool_call_id=call_id,
+                tool_name=self.name,
+                success=False,
+                summary="bash rejected: executable is outside trusted roots",
+                output=ACCESS_DENIED_MESSAGE,
+                error_type=ErrorType.WORKSPACE_ACCESS_DENIED,
+                error_message=ACCESS_DENIED_MESSAGE,
+                retryable=True,
+                metadata={"workspace_access_denied": True},
+            )
+        except EvaluationSandboxRuntimeUnavailable:
+            return ToolResult(
+                tool_call_id=call_id,
+                tool_name=self.name,
+                success=False,
+                summary="evaluation sandbox runtime unavailable",
+                output=SANDBOX_RUNTIME_UNAVAILABLE,
+                error_type=ErrorType.SANDBOX_RUNTIME_ERROR,
+                error_message=SANDBOX_RUNTIME_UNAVAILABLE,
+                retryable=False,
+            )
+        except EvaluationSandboxUnavailable:
+            return ToolResult(
+                tool_call_id=call_id,
+                tool_name=self.name,
+                success=False,
+                summary="evaluation sandbox unavailable",
+                output="EVALUATION_SANDBOX_UNAVAILABLE",
+                error_type=ErrorType.EVALUATION_SANDBOX_UNAVAILABLE,
+                error_message="EVALUATION_SANDBOX_UNAVAILABLE",
+                retryable=False,
             )
         except (OSError, ValueError) as exc:
             return ToolResult(

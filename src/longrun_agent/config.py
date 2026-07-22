@@ -377,10 +377,26 @@ class GeneratedTestsConfig(BaseModel):
 
     enabled: bool = True
     max_candidates_per_task: int = Field(default=3, ge=0)
+    require_candidate_before_completion: bool = False
+    minimum_registered_candidates: int = Field(default=1, ge=0)
+    minimum_valid_candidates: int = Field(default=1, ge=0)
+    reminder_after_steps: int = Field(default=6, ge=1)
+    reminder_interval_steps: int = Field(default=4, ge=1)
+    max_registration_attempts: int = Field(default=3, ge=1)
     require_baseline_failure: bool = True
     require_candidate_pass: bool = True
     forbid_candidate_regressions: bool = True
     coverage_enabled: bool = False
+
+    @model_validator(mode="after")
+    def validate_required_workflow(self) -> GeneratedTestsConfig:
+        if self.require_candidate_before_completion and not self.enabled:
+            raise ValueError("generated test completion requirements require generated_tests.enabled=true")
+        if self.require_candidate_before_completion and self.minimum_registered_candidates > self.max_candidates_per_task:
+            raise ValueError("minimum_registered_candidates cannot exceed max_candidates_per_task")
+        if self.require_candidate_before_completion and self.minimum_valid_candidates > self.minimum_registered_candidates:
+            raise ValueError("minimum_valid_candidates cannot exceed minimum_registered_candidates")
+        return self
 
 
 class VerificationConfig(BaseModel):
@@ -415,6 +431,10 @@ class EvaluationConfig(BaseModel):
     deterministic_failure_attribution: bool = True
     model_assisted_attribution: bool = False
     preserve_workspaces: bool = False
+    isolation_enabled: bool = Field(default=False, exclude=True)
+    denied_roots: list[Path] = Field(default_factory=list, exclude=True)
+    private_markers: set[str] = Field(default_factory=set, exclude=True)
+    private_audit_path: Path | None = Field(default=None, exclude=True)
 
 
 class AppConfig(BaseModel):

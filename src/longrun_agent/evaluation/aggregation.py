@@ -11,7 +11,11 @@ from longrun_agent.evaluation.schema import TrialResult, TrialStatus, latest_tri
 
 def aggregate_results(results: list[TrialResult]) -> dict[str, Any]:
     results = latest_trial_results(results)
-    completed = [item for item in results if item.descriptor.status == TrialStatus.COMPLETED and item.outcome is not None]
+    included = [
+        item
+        for item in results
+        if (item.descriptor.status == TrialStatus.COMPLETED and item.outcome is not None) or item.descriptor.status == TrialStatus.ERROR
+    ]
     groups: dict[str, dict[str, list[TrialResult]]] = {
         "task": defaultdict(list),
         "config": defaultdict(list),
@@ -19,7 +23,7 @@ def aggregate_results(results: list[TrialResult]) -> dict[str, Any]:
         "trial": defaultdict(list),
         "overall": defaultdict(list),
     }
-    for item in completed:
+    for item in included:
         groups["task"][item.descriptor.case_id].append(item)
         groups["config"][item.descriptor.config_id].append(item)
         groups["mode"][str(item.metadata.get("mode") or item.descriptor.config_id)].append(item)
@@ -29,7 +33,8 @@ def aggregate_results(results: list[TrialResult]) -> dict[str, Any]:
 
 
 def _aggregate_group(items: list[TrialResult]) -> dict[str, Any]:
-    rows = [trial_metrics(item.outcome) for item in items if item.outcome is not None]
+    completed = [item for item in items if item.descriptor.status == TrialStatus.COMPLETED and item.outcome is not None]
+    rows = [trial_metrics(item.outcome) for item in completed if item.outcome is not None]
 
     numeric_keys = sorted(
         {key for row in rows for key, value in row.items() if value is not None and isinstance(value, (int, float, bool))}
@@ -46,8 +51,14 @@ def _aggregate_group(items: list[TrialResult]) -> dict[str, Any]:
             "missing_count": len(rows) - len(values),
         }
 
-    outcomes = [item.outcome for item in items if item.outcome is not None]
-    attributions = [item.attribution for item in items if item.attribution is not None]
+    outcomes = [item.outcome for item in completed if item.outcome is not None]
+    failed_items = [
+        item
+        for item in items
+        if item.descriptor.status == TrialStatus.ERROR
+        or (item.outcome is not None and (item.outcome.oracle_verification_verdict != "verified" or item.outcome.integrity_passed is False))
+    ]
+    attributions = [item.attribution for item in failed_items if item.attribution is not None]
     runtime_verdicts = [outcome.runtime_verification_verdict for outcome in outcomes]
     oracle_verdicts = [outcome.oracle_verification_verdict for outcome in outcomes]
     disagreement_count = sum(
@@ -55,7 +66,7 @@ def _aggregate_group(items: list[TrialResult]) -> dict[str, Any]:
     )
 
     return {
-        "count": len(items),
+        "count": len(completed),
         "metrics": metrics,
         "success_at_k": success_at_k([bool(outcome.full_resolution) for outcome in outcomes]),
         "termination_reason_distribution": dict(Counter(outcome.termination_reason.value for outcome in outcomes)),

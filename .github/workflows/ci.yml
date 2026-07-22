@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    env:
+      OPENAI_API_KEY: ""
+      MODEL_API_KEY: ""
+      LONGRUN_MODEL: ""
+      LONGRUN_API_BASE_URL: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Bubblewrap
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+      - name: Verify user namespaces
+        run: |
+          set -euo pipefail
+          unshare -Ur true
+      - name: Install package
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Native sandbox tests
+        run: |
+          set -euo pipefail
+          pytest -q \
+            tests/test_bash_tool.py::test_evaluation_sandbox_blocks_python_code_host_read_or_fails_closed \
+            tests/test_bash_tool.py::test_real_evaluation_sandbox_runs_python_and_pytest_with_isolation \
+            -rs | tee native-sandbox.out
+          if grep -Eiq "skipped|SKIPPED" native-sandbox.out; then
+            echo "Native Bubblewrap sandbox tests must not skip in CI."
+            exit 1
+          fi
+          grep -Eq "2 passed" native-sandbox.out
+      - name: Tests and coverage
+        run: |
+          set -euo pipefail
+          pytest -q
+          pytest -q --cov=longrun_agent --cov-report=term-missing --cov-fail-under=90
+      - name: Quality gates
+        run: |
+          set -euo pipefail
+          ruff check .
+          ruff format --check .
+          python -m compileall -q src tests scripts
+          git diff --check

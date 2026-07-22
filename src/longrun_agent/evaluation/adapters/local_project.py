@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -16,10 +17,15 @@ from longrun_agent.evaluation.schema import (
     TerminationReason,
     TrialDescriptor,
 )
+from longrun_agent.evaluation.tool_calls import summarize_tool_calls
+from longrun_agent.evaluation.workspace_artifacts import preserve_final_workspace_artifacts
 from longrun_agent.model.base import ModelProvider
 from longrun_agent.orchestration.orchestrator import ProjectOrchestrator
 from longrun_agent.state.schema import TaskStatus
 from longrun_agent.state.store import ProjectStateStore
+from longrun_agent.tools.sandbox import build_subprocess_sandbox
+from longrun_agent.tools.workspace_policy import WorkspaceAccessPolicy
+from longrun_agent.verification.contract import load_contract, private_marker_registry, split_contract
 from longrun_agent.verification.schema import VerificationPurpose, VerificationReport
 from longrun_agent.verification.store import VerificationStore
 
@@ -33,7 +39,18 @@ class LocalProjectAdapter:
             raise ValueError("local project case requires fixture")
         workspace = descriptor.trial_dir / "workspace"
         descriptor.trial_dir.mkdir(parents=True, exist_ok=True)
+        if workspace.exists():
+            shutil.rmtree(workspace)
         shutil.copytree(case.fixture, workspace, ignore=shutil.ignore_patterns(".git", ".runs", "__pycache__"))
+        if case.contract_path is not None:
+            source = load_contract(case.contract_path, workspace_root=workspace)
+            public, private = split_contract(source)
+            public_path = workspace / ".longrun" / "agent_contract.json"
+            public_path.parent.mkdir(parents=True, exist_ok=True)
+            public_path.write_text(public.model_dump_json(indent=2), encoding="utf-8")
+            private_path = descriptor.trial_dir / "oracle" / "private" / "contract.json"
+            private_path.parent.mkdir(parents=True, exist_ok=True)
+            private_path.write_text(private.model_dump_json(indent=2), encoding="utf-8")
 
     def reset(self, case: EvaluationTaskCase, descriptor: TrialDescriptor) -> None:
         script = self.workspace(case, descriptor) / "reset_repo.py"
@@ -53,7 +70,8 @@ class LocalProjectAdapter:
         return descriptor.trial_dir / "workspace"
 
     def verification_contract(self, case: EvaluationTaskCase, descriptor: TrialDescriptor) -> Path | None:
-        return case.contract_path
+        public_path = self.workspace(case, descriptor) / ".longrun" / "agent_contract.json"
+        return public_path if public_path.exists() else None
 
     def run_agent(self, case: EvaluationTaskCase, config_path: Path, seed: int, descriptor: TrialDescriptor):
         config = load_config(config_path)
@@ -62,8 +80,36 @@ class LocalProjectAdapter:
         config.telemetry.run_root = descriptor.trial_dir / "telemetry"
         config.knowledge.root = descriptor.shared_knowledge_root or descriptor.trial_dir / "knowledge"
         config.verification.store_root = config.state.root
-        if case.contract_path:
-            config.verification.contract.path = case.contract_path
+        private_path = descriptor.trial_dir / "oracle" / "private" / "contract.json"
+        if private_path.exists():
+            from longrun_agent.verification.schema import OraclePrivateContract
+
+            private = OraclePrivateContract.model_validate_json(private_path.read_text(encoding="utf-8"))
+            config.verification.contract.path = self.workspace(case, descriptor) / ".longrun" / "agent_contract.json"
+            config.evaluation.denied_roots = [
+                descriptor.trial_dir / "oracle",
+                descriptor.trial_dir / "state",
+                case.contract_path.parent if case.contract_path else descriptor.trial_dir / "oracle",
+                *[
+                    path
+                    for path in descriptor.trial_dir.parent.iterdir()
+                    if path.is_dir() and path.resolve() != descriptor.trial_dir.resolve()
+                ],
+            ]
+            config.evaluation.private_markers = private_marker_registry(private)
+            config.evaluation.private_audit_path = descriptor.trial_dir / "oracle" / "private" / "tool_result_blocks.jsonl"
+        config.evaluation.enabled = True
+        config.evaluation.isolation_enabled = config.model.provider != "fake"
+        if config.evaluation.isolation_enabled:
+            policy = WorkspaceAccessPolicy.for_workspace(
+                config.workspace.root,
+                evaluation_isolation_enabled=True,
+                denied_roots=config.evaluation.denied_roots,
+                private_markers=config.evaluation.private_markers,
+                private_audit_path=config.evaluation.private_audit_path,
+            )
+            sandbox = build_subprocess_sandbox(policy)
+            sandbox.preflight()
         provider = self.provider_factory(config, case, seed)
         project_id = f"{descriptor.trial_id}-{case.case_id}"
         return ProjectOrchestrator(config, provider, project_id=project_id).start(self.objective(case, descriptor))
@@ -107,8 +153,38 @@ class LocalProjectAdapter:
             self.workspace(case, descriptor),
             purpose=VerificationPurpose.RUNTIME,
         )
-        test_candidates = [candidate for report in reports for candidate in report.test_candidates]
+        verification_store = VerificationStore(state_root, outcome.project_id, workspace_root=self.workspace(case, descriptor))
+        test_candidates_by_id = {
+            candidate.candidate_id: candidate
+            for candidate in [
+                *verification_store.list_test_candidates(),
+                *[candidate for report in reports for candidate in report.test_candidates],
+            ]
+        }
+        test_candidates = list(test_candidates_by_id.values())
+        workspace_artifacts = preserve_final_workspace_artifacts(descriptor.trial_dir, self.workspace(case, descriptor))
+        tool_call_summary = summarize_tool_calls(
+            sorted((descriptor.trial_dir / "telemetry").rglob("events.jsonl")) if (descriptor.trial_dir / "telemetry").exists() else []
+        )
+        tool_calls_path = descriptor.trial_dir / "artifacts" / "tool_calls.json"
+        tool_calls_path.write_text(json.dumps(tool_call_summary, indent=2, sort_keys=True), encoding="utf-8")
         termination_reason = termination_reason_from_status(state.status.value)
+        if termination_reason == TerminationReason.UNKNOWN:
+            for session in reversed(sessions):
+                session_reason = termination_reason_from_status(str(session.get("run_status") or ""))
+                if session_reason in {
+                    TerminationReason.TASK_LIMIT,
+                    TerminationReason.TIME_LIMIT,
+                    TerminationReason.SESSION_LIMIT,
+                    TerminationReason.CONTEXT_LIMIT,
+                    TerminationReason.PROVIDER_ERROR,
+                    TerminationReason.INVALID_FORMAT,
+                }:
+                    termination_reason = session_reason
+                    break
+                if session_reason == TerminationReason.COMPLETED and state.status.value == "active":
+                    termination_reason = session_reason
+                    break
         if verification.oracle_verdict in {"contract_invalid", "infrastructure_error", "inconclusive"}:
             termination_reason = {
                 "contract_invalid": TerminationReason.CONTRACT_INVALID,
@@ -152,7 +228,7 @@ class LocalProjectAdapter:
             verifier_seconds=sum(
                 result.duration_seconds for report in reports for result in [*report.baseline_results, *report.candidate_results]
             ),
-            tool_calls=sum(int(session.get("tool_call_count") or 0) for session in sessions),
+            tool_calls=len(tool_call_summary),
             sessions=len(sessions),
             context_resets=sum(int(session.get("context_reset_count") or 0) for session in sessions),
             plan_revisions=len(state.revisions),
@@ -162,6 +238,8 @@ class LocalProjectAdapter:
             artifact_paths=[
                 str(store.state_path(outcome.project_id)),
                 *[str(state_root / outcome.project_id / "verification" / "reports" / f"{item.report_id}.json") for item in reports],
+                *[str(path) for path in workspace_artifacts],
+                str(tool_calls_path),
             ],
             test_candidates=len(test_candidates),
             well_formed_test_candidates=sum(item.valid for item in test_candidates),

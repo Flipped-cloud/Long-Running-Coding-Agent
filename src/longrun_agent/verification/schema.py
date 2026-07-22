@@ -156,6 +156,64 @@ class GeneratedTestPolicy(BaseModel):
     max_candidates_per_task: int = Field(default=3, ge=0)
 
 
+class AgentVisibleIntegrityRules(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    protected_paths: list[str] = Field(default_factory=list)
+    trusted_test_patterns: list[str] = Field(default_factory=list)
+    forbidden_change_patterns: list[str] = Field(default_factory=list)
+    allowed_change_patterns: list[str] = Field(default_factory=list)
+    required_artifacts: list[str] = Field(default_factory=list)
+    max_deleted_files: int = Field(default=100, ge=0)
+    max_binary_file_bytes: int = Field(default=10_000_000, ge=1)
+    allow_project_config_changes: bool = False
+    allowed_test_directories: list[str] = Field(default_factory=lambda: ["tests"])
+
+
+class AgentVisibleContract(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contract_visibility: Literal["agent"] = "agent"
+    contract_id: str
+    contract_version: int = Field(default=1, ge=1)
+    project_id: str
+    task_id: str | None = None
+    task_key: str | None = None
+    scope: Literal["project", "task"] = "project"
+    source: Literal["file", "legacy", "fixture", "external_adapter"] = "file"
+    checks: list[VerificationCheck] = Field(default_factory=list)
+    integrity_rules: AgentVisibleIntegrityRules = Field(default_factory=AgentVisibleIntegrityRules)
+    generated_test_policy: GeneratedTestPolicy = Field(default_factory=GeneratedTestPolicy)
+    completion_requirements: list[str] = Field(default_factory=list)
+    opaque_contract_fingerprint: str
+    inconclusive_action: Literal["block", "ready"] = "block"
+    schema_version: str = "0.5.5"
+
+    @model_validator(mode="after")
+    def public_checks_only(self) -> AgentVisibleContract:
+        if any(check.visibility != CheckVisibility.PUBLIC for check in self.checks):
+            raise ValueError("agent-visible contract cannot contain hidden checks")
+        return self
+
+    def to_runtime_contract(self) -> VerificationContract:
+        rules = IntegrityRules(**self.integrity_rules.model_dump())
+        return VerificationContract(
+            contract_id=self.contract_id,
+            contract_version=self.contract_version,
+            project_id=self.project_id,
+            task_id=self.task_id,
+            task_key=self.task_key,
+            scope=self.scope,
+            source=self.source,
+            checks=self.checks,
+            integrity_rules=rules,
+            generated_test_policy=self.generated_test_policy,
+            hidden_assets_root=None,
+            inconclusive_action=self.inconclusive_action,
+            schema_version=self.schema_version,
+        )
+
+
 class BaselineSnapshotReference(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -208,6 +266,21 @@ class VerificationContract(BaseModel):
         frozen.frozen_at = frozen.frozen_at or utc_now()
         frozen.contract_hash = frozen.canonical_hash()
         return frozen
+
+
+class OraclePrivateContract(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contract_visibility: Literal["oracle_private"] = "oracle_private"
+    contract: VerificationContract
+    private_fingerprint: str
+    schema_version: str = "0.5.5"
+
+    @model_validator(mode="after")
+    def validate_fingerprint(self) -> OraclePrivateContract:
+        if self.contract.contract_hash != self.private_fingerprint:
+            raise ValueError("oracle private contract fingerprint mismatch")
+        return self
 
 
 class FileManifestEntry(BaseModel):

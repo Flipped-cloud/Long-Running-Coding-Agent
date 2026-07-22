@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -81,6 +82,8 @@ class EventLogger:
         artifact_path: str | None = None,
         error_type: str | None = None,
         error_message: str | None = None,
+        retryable: bool | None = None,
+        sanitized_message: str | None = None,
         payload: dict[str, Any] | None = None,
     ) -> EventRecord:
         record = EventRecord(
@@ -101,7 +104,9 @@ class EventLogger:
             output_tokens=output_tokens,
             artifact_path=artifact_path,
             error_type=error_type,
-            error_message=error_message,
+            error_message=sanitize_message(error_message),
+            retryable=retryable,
+            sanitized_message=sanitize_message(sanitized_message),
             payload=sanitize_payload(payload or {}),
         )
         with self.events_path.open("a", encoding="utf-8") as handle:
@@ -118,3 +123,16 @@ class EventLogger:
         payload = result.model_dump(mode="json")
         payload["stats"] = sanitize_payload(stats or {})
         self.run_json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def sanitize_message(message: str | None) -> str | None:
+    if message is None:
+        return None
+    text = message[:1000]
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("api_key=", "authorization:", "bearer ")):
+        return "[redacted sensitive error message]"
+    for name, value in os.environ.items():
+        if value and len(value) >= 8 and is_sensitive_key(name):
+            text = text.replace(value, "[redacted]")
+    return text

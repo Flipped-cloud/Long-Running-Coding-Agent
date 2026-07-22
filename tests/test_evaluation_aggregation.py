@@ -3,6 +3,8 @@ from __future__ import annotations
 from longrun_agent.evaluation.aggregation import aggregate_results
 from longrun_agent.evaluation.schema import (
     EvaluationOutcome,
+    FailureAttribution,
+    FailureLayer,
     ProgressSnapshot,
     TerminationReason,
     TrialDescriptor,
@@ -126,3 +128,38 @@ def test_aggregate_uses_only_latest_result_for_duplicate_trial_id() -> None:
 
     assert report["overall"]["all"]["count"] == 1
     assert report["trial"]["duplicate"]["count"] == 1
+
+
+def test_success_does_not_enter_failure_distribution_but_error_does() -> None:
+    success = _trial(trial_id="success", progress=1.0, with_first_progress=True)
+    success.attribution = FailureAttribution(
+        case_id="case-a",
+        trial_id="success",
+        termination_reason=TerminationReason.COMPLETED,
+        primary_code="UNCLASSIFIED_FAILURE",
+    )
+    error = TrialResult(
+        descriptor=TrialDescriptor(
+            evaluation_id="eval-test",
+            case_id="case-a",
+            config_id="config-a",
+            trial_id="error",
+            trial_number=2,
+            seed=0,
+            trial_dir="/tmp/error",
+            status=TrialStatus.ERROR,
+        ),
+        attribution=FailureAttribution(
+            case_id="case-a",
+            trial_id="error",
+            termination_reason=TerminationReason.ENVIRONMENT_ERROR,
+            primary_layer=FailureLayer.ENVIRONMENT,
+            primary_code="HARNESS_ERROR",
+        ),
+        error="sandbox unavailable",
+    )
+
+    overall = aggregate_results([success, error])["overall"]["all"]
+
+    assert overall["count"] == 1
+    assert overall["failure_code_distribution"] == {"HARNESS_ERROR": 1}

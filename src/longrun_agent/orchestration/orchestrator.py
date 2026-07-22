@@ -44,6 +44,7 @@ from longrun_agent.verification.schema import (
     CheckKind,
     CheckVisibility,
     ExecutionStatus,
+    TestCandidate,
     VerificationCheck,
     VerificationContract,
     VerificationPurpose,
@@ -280,16 +281,21 @@ class ProjectOrchestrator:
             return
         for candidate in channel.test_candidates:
             self.verification_store.save_test_candidate(candidate)
-            self.verification_store.append_verification_event(
-                "test_candidate_registered",
-                project_id=state.project_id,
-                task_id=candidate.task_id,
-                session_id=candidate.session_id,
-                contract_id=self.verification_contract.contract_id if self.verification_contract else None,
-                contract_hash=self.verification_contract.contract_hash if self.verification_contract else None,
-                sanitized_reason="Agent-authored test candidate registered for independent validation",
-                evidence_ids=[candidate.candidate_id],
-            )
+
+    def _validate_registered_test_candidate(self, state: ProjectState, candidate: TestCandidate) -> TestCandidate:
+        assert self.verification_store is not None
+        self.verification_store.save_test_candidate(candidate)
+        self.verification_store.append_verification_event(
+            "test_candidate_registered",
+            project_id=state.project_id,
+            task_id=candidate.task_id,
+            session_id=candidate.session_id,
+            contract_id=self.verification_contract.contract_id if self.verification_contract else None,
+            contract_hash=self.verification_contract.contract_hash if self.verification_contract else None,
+            sanitized_reason="Agent-authored test candidate registered for independent validation",
+            evidence_ids=[candidate.candidate_id],
+        )
+        return self._verification_gateway().validate_test_candidate(candidate)
 
     def _reopen_task_after_verification(self, state: ProjectState, task: TaskNode, report: VerificationReport) -> None:
         task.reopen_count += 1
@@ -384,10 +390,19 @@ class ProjectOrchestrator:
                 workspace=self.config.workspace.root,
                 task_id=task.id,
                 session_id=session_id,
-                verification_contract=self._contract_for_task(task),
+                verification_contract=self.verification_contract,
                 max_test_candidates=(
                     self.config.verification.generated_tests.max_candidates_per_task if self.config.verification.mode == "contract" else 0
                 ),
+                require_test_candidate_before_completion=(
+                    self.config.verification.mode == "contract"
+                    and self.config.verification.generated_tests.enabled
+                    and self.config.verification.generated_tests.require_candidate_before_completion
+                ),
+                minimum_registered_candidates=self.config.verification.generated_tests.minimum_registered_candidates,
+                minimum_valid_candidates=self.config.verification.generated_tests.minimum_valid_candidates,
+                max_registration_attempts=self.config.verification.generated_tests.max_registration_attempts,
+                candidate_validator=lambda candidate: self._validate_registered_test_candidate(state, candidate),
             )
             starting_task_status = task.status.value
             result, trace, knowledge_channel, knowledge_bundle = self._run_task_session(state, task, channel, session_id, project_deadline)
@@ -509,6 +524,7 @@ class ProjectOrchestrator:
             task,
             knowledge_context=knowledge_context,
             knowledge_retrieval_id=knowledge_bundle.retrieval_id if knowledge_context else None,
+            config=self.config,
         )
         context_manager = ContextLifecycleManager(
             self.config.context,
@@ -565,6 +581,7 @@ class ProjectOrchestrator:
             project_id=state.project_id,
             task_id=task.id,
             session_id=session_id,
+            generated_test_state=channel.workflow_state,
         )
         if result.latest_context_handoff_id:
             task.latest_context_handoff_id = result.latest_context_handoff_id
@@ -846,7 +863,7 @@ class ProjectOrchestrator:
         terminal = channel.terminal_signal
         candidate = None
         if terminal is None or terminal.type == ControlSignalType.COMPLETION_REQUEST:
-            candidate = self._completion_candidate_for(state, task, trace)
+            candidate = self._completion_candidate_for(state, task, trace, channel)
             if candidate is not None and task.completion_candidate is None:
                 task.completion_candidate = candidate
                 logger.log(
@@ -858,6 +875,17 @@ class ProjectOrchestrator:
                     payload=candidate.model_dump(mode="json"),
                 )
         if terminal is None:
+            requirement_error = channel.generated_test_requirement_error()
+            if requirement_error is not None:
+                logger.log(
+                    "generated_test_requirement_unmet",
+                    project_id=state.project_id,
+                    task_id=task.id,
+                    session_id=session_id,
+                    plan_version=state.plan_version,
+                    reason=str(requirement_error),
+                    payload=requirement_error.payload,
+                )
             logger.log(
                 "session_ended_without_task_signal",
                 project_id=state.project_id,
@@ -941,8 +969,16 @@ class ProjectOrchestrator:
             else:
                 self._transition(state, task.id, TaskStatus.BLOCKED, reason="decomposition requested but mode is static", source="control")
 
-    def _completion_candidate_for(self, state: ProjectState, task: TaskNode, trace: SessionTrace) -> CompletionCandidate | None:
+    def _completion_candidate_for(
+        self,
+        state: ProjectState,
+        task: TaskNode,
+        trace: SessionTrace,
+        channel: TaskControlChannel,
+    ) -> CompletionCandidate | None:
         if task.blocker:
+            return None
+        if channel.generated_test_requirement_error() is not None:
             return None
         changed_files = _dedupe([*task.files_touched, *trace.changed_files])
         successful_tests = list(trace.successful_test_commands)
@@ -1133,6 +1169,11 @@ class ProjectOrchestrator:
             "terminal_signal_recovered": result.terminal_signal_recovered,
             "auto_completion_recovered": task.auto_completion_recovered,
             "completion_candidate": task.completion_candidate.model_dump(mode="json") if task.completion_candidate else None,
+            "generated_test_registered_count": len(channel.test_candidates),
+            "valid_test_candidate_count": channel.valid_test_candidate_count,
+            "registration_attempt_count": channel.registration_attempt_count,
+            "completion_request_count": channel.completion_request_count,
+            "generated_test_requirement_unmet": channel.generated_test_requirement_error() is not None,
             "unsupported_shell_syntax_count": trace.unsupported_shell_syntax_count,
             "protocol_error_count": result.protocol_error_count,
             "recoverable_protocol_error_count": result.recoverable_protocol_error_count,
@@ -1586,11 +1627,15 @@ class _ChannelRouter(ToolRouter):
             )
         result = super().execute(call, context)
         self.trace.record(call, result)
+        if result.error_type == ErrorType.GENERATED_TEST_REQUIREMENT_UNMET:
+            self.trace.record_policy_gate(result)
+            self.action_required_message = result.output
         if result.metadata.get("unsupported_shell_syntax") and self.on_unsupported_shell:
             self.on_unsupported_shell(result)
         if len(result.output) > 12000:
             result.output = result.output[:6000] + "\n...[truncated for project session]...\n" + result.output[-6000:]
-        self.action_required_message = self.trace.action_required_message
+        if result.error_type != ErrorType.GENERATED_TEST_REQUIREMENT_UNMET:
+            self.action_required_message = self.trace.action_required_message
         return result
 
     def clear_action_required(self) -> None:

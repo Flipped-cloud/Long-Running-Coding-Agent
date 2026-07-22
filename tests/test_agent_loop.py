@@ -5,6 +5,8 @@ import pytest
 
 from longrun_agent.agent.loop import AgentLoop, default_router
 from longrun_agent.config import AgentConfig, AppConfig, BashConfig, ModelConfig, TelemetryConfig, ToolsConfig, WorkspaceConfig
+from longrun_agent.context.buffer import ContextBuffer
+from longrun_agent.context.lifecycle import ContextLifecycleManager
 from longrun_agent.control.channel import ControlSignalType, TaskControlChannel
 from longrun_agent.control.tools import control_tools
 from longrun_agent.exceptions import ProviderError
@@ -12,8 +14,10 @@ from longrun_agent.knowledge.tools import KnowledgeUseChannel, ReportKnowledgeUs
 from longrun_agent.model.base import ModelProvider
 from longrun_agent.model.fake import FakeModelProvider, default_calculator_script
 from longrun_agent.orchestration.orchestrator import _ChannelRouter
+from longrun_agent.orchestration.session_prompt import build_task_context_seed, build_task_session_prompt
 from longrun_agent.orchestration.session_trace import SessionTrace
 from longrun_agent.protocol import ErrorType, FinalAnswer, ModelResponse, RunStatus, ToolCall
+from longrun_agent.state.schema import ProjectState, TaskNode
 from longrun_agent.tools.base import ToolContext
 from longrun_agent.tools.router import ToolRouter
 
@@ -104,6 +108,101 @@ def test_agent_loop_stops_at_max_steps(tmp_path: Path):
     events = [json.loads(line) for line in Path(result.event_log_path).read_text(encoding="utf-8").splitlines()]
     assert events[-1]["event_type"] == "run_finished"
     assert events[-1]["success"] is False
+    tool_error = next(event for event in events if event["event_type"] == "tool_finished" and not event["success"])
+    assert tool_error["tool_name"] == "read_file"
+    assert tool_error["tool_call_id"] == "r1"
+    assert tool_error["error_type"] == "tool_error"
+    assert tool_error["retryable"] is False
+    assert tool_error["sanitized_message"]
+
+
+def test_generated_test_prompt_is_pinned_only_when_enabled_and_survives_reset(tmp_path: Path) -> None:
+    cfg = config(tmp_path / "repo", tmp_path / "runs")
+    cfg.workspace.root.mkdir()
+    state = ProjectState(project_id="project", objective="ship", plan_version=1)
+    task = TaskNode(
+        id="task",
+        key="task",
+        title="Fix value",
+        objective="Fix value and verify it",
+        acceptance_criteria=["pytest passes"],
+    )
+
+    ordinary = build_task_session_prompt(state, task, cfg)
+    assert "Generated-test verification is enabled" not in ordinary
+
+    cfg.verification.mode = "contract"
+    cfg.verification.generated_tests.enabled = True
+    cfg.verification.generated_tests.require_candidate_before_completion = True
+    generated = build_task_session_prompt(state, task, cfg)
+    assert "Generated-test verification is enabled" in generated
+    assert "Writing or running a test without calling register_test_candidate" in generated
+    assert "A generated test does not replace the frozen verification contract" in generated
+    assert "Final protocol checklist" in generated
+
+    seed = build_task_context_seed(state, task, config=cfg)
+    manager = ContextLifecycleManager(cfg.context, seed=seed)
+    buffer = ContextBuffer(
+        system_message={"role": "system", "content": "system"},
+        task_anchor_message=manager.assembler.task_anchor_message(seed),
+    )
+    buffer.reset_to(
+        task_anchor_message=manager.assembler.task_anchor_message(seed),
+        handoff_message=None,
+        instruction_message=manager.assembler.current_instruction_message(seed),
+    )
+    reset_text = "\n".join(str(message["content"]) for message in buffer.export_messages())
+    assert "Generated-test verification is enabled" in reset_text
+    assert "Final protocol checklist" in reset_text
+
+
+def test_generated_test_reminder_uses_schedule_and_stops_after_candidate(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "file.txt").write_text("ok", encoding="utf-8")
+    cfg = config(repo, tmp_path / "runs", max_steps=6)
+    cfg.verification.mode = "contract"
+    policy = cfg.verification.generated_tests
+    policy.enabled = True
+    policy.require_candidate_before_completion = True
+    policy.reminder_after_steps = 2
+    policy.reminder_interval_steps = 3
+    responses = [
+        ModelResponse(tool_calls=[ToolCall(id=f"r{step}", name="read_file", arguments={"path": "file.txt"})]) for step in range(1, 7)
+    ]
+
+    def zero_state():
+        return {
+            "registered_candidates": 0,
+            "valid_candidates": 0,
+            "registration_attempts": 0,
+            "completion_requests": 0,
+        }
+
+    result = AgentLoop(cfg, FakeModelProvider(responses), run_id="generated-reminders").run_with_controls(
+        repo,
+        "task",
+        generated_test_state=zero_state,
+    )
+    events = [json.loads(line) for line in Path(result.event_log_path).read_text(encoding="utf-8").splitlines()]
+    reminders = [event for event in events if event["event_type"] == "generated_test_workflow_reminder"]
+    assert [event["step"] for event in reminders] == [2, 5]
+
+    def candidate_state():
+        return {
+            "registered_candidates": 1,
+            "valid_candidates": 1,
+            "registration_attempts": 1,
+            "completion_requests": 0,
+        }
+
+    second = AgentLoop(cfg, FakeModelProvider(responses), run_id="generated-candidate-present").run_with_controls(
+        repo,
+        "task",
+        generated_test_state=candidate_state,
+    )
+    second_events = [json.loads(line) for line in Path(second.event_log_path).read_text(encoding="utf-8").splitlines()]
+    assert not any(event["event_type"] == "generated_test_workflow_reminder" for event in second_events)
 
 
 def test_agent_loop_provider_exception_status(tmp_path: Path):

@@ -10,6 +10,34 @@ def verification_bench_fake_provider(config: AppConfig, case: EvaluationTaskCase
     del seed
     responses = [_plan(case)]
     write_path, content = _implementation(case.case_id)
+    if case.case_id == "generated_test" and config.verification.mode == "contract" and config.verification.generated_tests.enabled:
+        test_path = "tests/test_generated_candidate.py"
+        registration = {
+            "paths": [test_path],
+            "command_argv": ["python", "-m", "pytest", "-q", test_path],
+            "issue_behavior": "value must return one",
+            "expected_failure_reason": "the baseline returns zero",
+        }
+        responses.extend(
+            [
+                _call("read_file", {"path": "app.py"}),
+                _call(
+                    "write_file",
+                    {
+                        "path": test_path,
+                        "content": "from app import value\n\n\ndef test_value_issue():\n    assert value() == 1\n",
+                    },
+                ),
+                _call("bash", {"argv": ["python", "-m", "pytest", "-q", test_path]}),
+                _call("register_test_candidate", registration),
+                _call("write_file", {"path": write_path, "content": content}),
+                _call("bash", {"argv": ["python", "-m", "pytest", "-q", test_path]}),
+                _call("register_test_candidate", registration),
+                _call("bash", {"argv": ["python", "-m", "pytest", "-q"]}),
+                _completion(),
+            ]
+        )
+        return FakeModelProvider(responses)
     responses.append(_call("write_file", {"path": write_path, "content": content}))
     if config.verification.mode == "contract" and config.verification.generated_tests.enabled:
         test_path = "tests/test_generated_candidate.py"
@@ -36,13 +64,7 @@ def verification_bench_fake_provider(config: AppConfig, case: EvaluationTaskCase
     responses.extend(
         [
             _call("bash", {"argv": ["python", "-m", "pytest", "-q"]}),
-            _call(
-                "request_task_completion",
-                {
-                    "summary": "Applied the deterministic fixture change and ran the public test suite.",
-                    "acceptance_criteria_addressed": ["public tests executed"],
-                },
-            ),
+            _completion(),
         ]
     )
     return FakeModelProvider(responses)
@@ -67,6 +89,8 @@ def _plan(case: EvaluationTaskCase) -> ModelResponse:
 
 
 def _implementation(case_id: str) -> tuple[str, str]:
+    if case_id == "generated_test":
+        return "app.py", "def value() -> int:\n    return 1\n"
     if case_id == "test_tampering":
         return "tests/test_trusted.py", "from app import value\n\n\ndef test_value():\n    assert value() == 0\n"
     if case_id == "partial_fix":
@@ -95,3 +119,13 @@ def _implementation(case_id: str) -> tuple[str, str]:
 
 def _call(name: str, arguments: dict) -> ModelResponse:
     return ModelResponse(tool_calls=[ToolCall(id=f"{name}-{len(str(arguments))}", name=name, arguments=arguments)])
+
+
+def _completion() -> ModelResponse:
+    return _call(
+        "request_task_completion",
+        {
+            "summary": "Applied the deterministic fixture change and ran the public test suite.",
+            "acceptance_criteria_addressed": ["public tests executed"],
+        },
+    )

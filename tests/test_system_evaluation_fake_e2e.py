@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import yaml
+
 from longrun_agent.evaluation.adapters.local_project import LocalProjectAdapter
 from longrun_agent.evaluation.coordinator import EvaluationCoordinator
 from longrun_agent.evaluation.fake_provider import verification_bench_fake_provider
@@ -138,3 +140,85 @@ def test_numeric_bash_argv_completes_local_project_evaluation(tmp_path: Path) ->
     assert len(normalized) == 1
     assert normalized[0]["tool_call_id"] == "real-regression-response"
     assert normalized[0]["payload"]["index"] == 5
+
+
+def test_enforced_generated_test_workflow_preserves_evidence_after_cleanup(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    enforced_config = yaml.safe_load((root / "configs" / "contract_plus_generated_tests.yaml").read_text(encoding="utf-8"))
+    enforced_config["verification"]["generated_tests"].update(
+        {
+            "require_candidate_before_completion": True,
+            "minimum_registered_candidates": 1,
+            "minimum_valid_candidates": 1,
+            "reminder_after_steps": 2,
+            "reminder_interval_steps": 2,
+            "max_registration_attempts": 3,
+        }
+    )
+    enforced_path = tmp_path / "enforced_generated.yaml"
+    enforced_path.write_text(yaml.safe_dump(enforced_config, sort_keys=False), encoding="utf-8")
+    case = EvaluationTaskCase(
+        case_id="generated_test",
+        fixture=root / "examples" / "verification_bench" / "generated_test",
+        task_file=Path("TASK.md"),
+        contract_path=root / "examples" / "verification_bench" / "contracts" / "generated_test.yaml",
+    )
+    manifest = EvaluationManifest(
+        evaluation_id="e",
+        task_cases=[case],
+        agent_configs=[
+            AgentConfigReference(
+                config_id="c",
+                path=root / "configs" / "contract_verification.yaml",
+                mode="contract",
+            ),
+            AgentConfigReference(
+                config_id="g",
+                path=enforced_path,
+                mode="contract_generated",
+            ),
+        ],
+        output_root=tmp_path / "evaluations",
+    )
+    coordinator = EvaluationCoordinator(
+        manifest,
+        {"local_project": LocalProjectAdapter(verification_bench_fake_provider)},
+        preserve_workspaces=False,
+    )
+
+    report = coordinator.run()
+
+    assert report["completed_count"] == 2
+    assert report["error_count"] == 0
+    rows = read_trial_results(coordinator.results_path)
+    normal = next(row for row in rows if row.descriptor.config_id == "c")
+    enforced = next(row for row in rows if row.descriptor.config_id == "g")
+    assert normal.outcome is not None and normal.outcome.test_candidates == 0
+    assert enforced.outcome is not None
+    assert enforced.outcome.full_resolution
+    assert enforced.outcome.test_candidates == 2
+    assert enforced.outcome.well_formed_test_candidates == 1
+    assert enforced.outcome.completion_requests == 1
+    assert enforced.outcome.termination_reason.value == "completed"
+    assert not enforced.descriptor.trial_dir.joinpath("workspace").exists()
+
+    verification_events = [
+        json.loads(line)
+        for path in enforced.descriptor.trial_dir.joinpath("state").glob("*/verification/events.jsonl")
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    event_types = {event["event_type"] for event in verification_events}
+    assert "test_candidate_registered" in event_types
+    assert "test_candidate_validated" in event_types
+
+    artifacts = enforced.descriptor.trial_dir / "artifacts"
+    for name in (
+        "final_workspace_diff.patch",
+        "changed_files.json",
+        "final_workspace_fingerprint.json",
+        "tool_calls.json",
+    ):
+        assert (artifacts / name).exists()
+    tool_calls = json.loads((artifacts / "tool_calls.json").read_text(encoding="utf-8"))
+    assert len(tool_calls) == enforced.outcome.tool_calls
+    assert any(call["tool_name"] == "register_test_candidate" for call in tool_calls)

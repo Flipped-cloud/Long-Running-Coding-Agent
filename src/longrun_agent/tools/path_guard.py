@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from longrun_agent.exceptions import WorkspaceSecurityError
+from longrun_agent.tools.workspace_policy import WorkspaceAccessPolicy
 
 
 def ensure_workspace_root(workspace_root: str | Path) -> Path:
@@ -31,36 +32,10 @@ def resolve_workspace_path(
 ) -> Path:
     """Resolve a model supplied relative path and reject workspace escapes."""
 
-    if not requested_path or not requested_path.strip():
-        raise WorkspaceSecurityError("empty paths are not allowed")
-    root = ensure_workspace_root(workspace_root)
-    raw = Path(requested_path)
-    if raw.is_absolute():
-        raise WorkspaceSecurityError("absolute paths are not allowed")
-
-    candidate = root / raw
-    if must_exist and not candidate.exists():
-        raise FileNotFoundError(requested_path)
-
-    parent = candidate.parent
-    while not parent.exists() and parent != root:
-        parent = parent.parent
-    if not is_inside_path(parent.resolve(), root):
-        raise WorkspaceSecurityError("path escapes workspace")
-
+    policy = WorkspaceAccessPolicy.for_workspace(ensure_workspace_root(workspace_root))
     if allow_create:
-        for ancestor in candidate.parents:
-            if ancestor == root.parent:
-                break
-            if ancestor.exists() and ancestor.is_symlink() and not is_inside_path(ancestor.resolve(), root):
-                raise WorkspaceSecurityError("symlink parent escapes workspace")
-
-    resolved = candidate.resolve(strict=False)
-    if not is_inside_path(resolved, root):
-        raise WorkspaceSecurityError("path escapes workspace")
-    if candidate.exists() and candidate.is_symlink() and not is_inside_path(candidate.resolve(), root):
-        raise WorkspaceSecurityError("symlink escapes workspace")
-    return resolved
+        return policy.resolve_write(requested_path)
+    return policy.resolve_read(requested_path, must_exist=must_exist)
 
 
 def relative_to_workspace(workspace_root: str | Path, path: str | Path) -> str:

@@ -1,0 +1,23 @@
+evaluation_id: api-v051-generated-pilot-v3
+task_cases:
+- case_id: generated_test
+  adapter: local_project
+  fixture: ../../examples/verification_bench/generated_test
+  task_file: TASK.md
+  contract_path: ../../examples/verification_bench/contracts/generated_test.yaml
+agent_configs:
+- config_id: contract
+  mode: contract
+  path: ../../configs/api_v051_contract.yaml
+- config_id: contract_generated
+  mode: contract_generated
+  path: ../../configs/api_v051_contract_generated.yaml
+trial_count: 1
+seeds:
+- 0
+budgets:
+  max_project_sessions: 4
+reset_policy: per_trial
+verification_policy: contract
+output_root: ../../.runs/evaluations
+shared_knowledge: false

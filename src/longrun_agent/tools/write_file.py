@@ -10,7 +10,8 @@ from pydantic import BaseModel, Field
 from longrun_agent.exceptions import WorkspaceSecurityError
 from longrun_agent.protocol import ErrorType, ToolResult
 from longrun_agent.tools.base import BaseTool, ToolContext
-from longrun_agent.tools.path_guard import relative_to_workspace, resolve_workspace_path
+from longrun_agent.tools.path_guard import relative_to_workspace
+from longrun_agent.tools.workspace_policy import ACCESS_DENIED_MESSAGE, WorkspaceAccessDenied
 
 
 class WriteFileArgs(BaseModel):
@@ -38,7 +39,7 @@ class WriteFileTool(BaseTool):
                     error_type=ErrorType.TOOL,
                     error_message="content exceeds configured max_chars",
                 )
-            path = resolve_workspace_path(context.workspace, arguments.path, allow_create=True)
+            path = context.workspace_policy.resolve_write(arguments.path)
             if path.exists() and path.is_dir():
                 raise IsADirectoryError(arguments.path)
             before = path.read_text(encoding="utf-8") if path.exists() else ""
@@ -122,6 +123,17 @@ class WriteFileTool(BaseTool):
                     "atomic": True,
                 },
                 artifact_path=artifact_path,
+            )
+        except WorkspaceAccessDenied:
+            return ToolResult(
+                tool_call_id=call_id,
+                tool_name=self.name,
+                success=False,
+                summary="write_file denied by workspace policy",
+                output=ACCESS_DENIED_MESSAGE,
+                error_type=ErrorType.WORKSPACE_ACCESS_DENIED,
+                error_message=ACCESS_DENIED_MESSAGE,
+                retryable=True,
             )
         except (WorkspaceSecurityError, OSError, UnicodeDecodeError) as exc:
             return ToolResult(

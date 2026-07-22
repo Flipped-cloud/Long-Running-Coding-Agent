@@ -35,6 +35,12 @@ verification:
   generated_tests:
     enabled: true
     max_candidates_per_task: 3
+    require_candidate_before_completion: true
+    minimum_registered_candidates: 1
+    minimum_valid_candidates: 1
+    reminder_after_steps: 6
+    reminder_interval_steps: 4
+    max_registration_attempts: 3
 agent:
   max_steps: 20
   max_consecutive_errors: 5

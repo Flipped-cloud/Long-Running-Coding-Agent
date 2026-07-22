@@ -22,6 +22,8 @@ from longrun_agent.tools.bash import BashTool
 from longrun_agent.tools.path_guard import ensure_workspace_root
 from longrun_agent.tools.read_file import ReadFileTool
 from longrun_agent.tools.router import ToolRouter
+from longrun_agent.tools.sandbox import build_subprocess_sandbox
+from longrun_agent.tools.workspace_policy import WorkspaceAccessPolicy
 from longrun_agent.tools.write_file import WriteFileTool
 
 
@@ -71,15 +73,25 @@ class AgentLoop:
         project_id: str | None = None,
         task_id: str | None = None,
         session_id: str | None = None,
+        generated_test_state: Callable[[], dict[str, int]] | None = None,
     ) -> RunResult:
         workspace_path = ensure_workspace_root(workspace or self.config.workspace.root)
         run_dir = self.config.telemetry.run_root / self.run_id
         logger = EventLogger(self.run_id, run_dir, self.config.model.model_name)
+        workspace_policy = WorkspaceAccessPolicy.for_workspace(
+            workspace_path,
+            evaluation_isolation_enabled=self.config.evaluation.isolation_enabled,
+            denied_roots=self.config.evaluation.denied_roots,
+            private_markers=self.config.evaluation.private_markers,
+            private_audit_path=self.config.evaluation.private_audit_path,
+        )
         context = ToolContext(
             workspace=workspace_path,
             tool_outputs_dir=logger.tool_outputs_dir,
             diffs_dir=logger.diffs_dir,
             config=self.config.tools,
+            workspace_policy=workspace_policy,
+            subprocess_sandbox=build_subprocess_sandbox(workspace_policy),
         )
         if context_manager is None:
             context_manager = ContextLifecycleManager(
@@ -132,6 +144,12 @@ class AgentLoop:
                     error_message="session deadline reached before next model request",
                 )
                 break
+            if self._generated_test_reminder_due(step, generated_test_state):
+                workflow_state = generated_test_state() if generated_test_state is not None else {}
+                reminder = self._generated_test_workflow_reminder()
+                context_buffer.add_user_reminder(reminder)
+                logger.log(step, "generated_test_workflow_reminder", action_type="protocol", payload=workflow_state)
+                self._emit("generated_test_workflow_reminder", {"step": step, **workflow_state})
             remaining = self.config.agent.max_steps - step + 1
             terminal_tools_only = False
             if require_external_terminal and remaining == 3:
@@ -140,6 +158,8 @@ class AgentLoop:
                 )
             if require_external_terminal and remaining == 1:
                 terminal_tools_only = True
+                if self._generated_test_workflow_enabled():
+                    context_buffer.add_user_reminder(self._generated_test_final_checklist())
                 if self._knowledge_decision_pending():
                     context_buffer.add_user_reminder(
                         "Final model turn: retrieved knowledge is awaiting a Knowledge Decision. "
@@ -276,7 +296,11 @@ class AgentLoop:
                 self._record_argument_normalizations(logger, step, call, result)
                 if result.success:
                     consecutive_errors = 0
-                elif result.error_type not in {ErrorType.ENVIRONMENT, ErrorType.POLICY_GATE}:
+                elif result.error_type not in {
+                    ErrorType.ENVIRONMENT,
+                    ErrorType.POLICY_GATE,
+                    ErrorType.GENERATED_TEST_REQUIREMENT_UNMET,
+                }:
                     consecutive_errors += 1
                 if result.error_type == ErrorType.PROTOCOL:
                     protocol_error_count += 1
@@ -297,11 +321,23 @@ class AgentLoop:
                     artifact_path=result.artifact_path,
                     error_type=result.error_type.value if result.error_type else None,
                     error_message=result.error_message,
+                    retryable=result.retryable,
+                    sanitized_message=result.error_message,
                     payload={"metadata": result.metadata},
                 )
                 self._emit(
                     "tool_finished",
-                    {"step": step, "tool": call.name, "success": result.success, "summary": result.summary, "metadata": result.metadata},
+                    {
+                        "step": step,
+                        "tool": call.name,
+                        "tool_call_id": call.id,
+                        "success": result.success,
+                        "summary": result.summary,
+                        "error_type": result.error_type.value if result.error_type else None,
+                        "retryable": result.retryable,
+                        "sanitized_message": result.error_message,
+                        "metadata": result.metadata,
+                    },
                 )
                 context_buffer.add_tool_result(
                     {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": result.model_dump_json()}
@@ -410,6 +446,8 @@ class AgentLoop:
                             artifact_path=result.artifact_path,
                             error_type=result.error_type.value if result.error_type else None,
                             error_message=result.error_message,
+                            retryable=result.retryable,
+                            sanitized_message=result.error_message,
                             payload={"metadata": result.metadata, "terminal_grace_turn": True},
                         )
                         context_buffer.add_tool_result(
@@ -587,6 +625,37 @@ class AgentLoop:
             "Verification evidence is complete. A completion candidate has been generated. "
             "Confirm completion by calling request_task_completion. Otherwise call report_blocker with the exact remaining issue. "
             "Do not perform more exploration."
+        )
+
+    def _generated_test_workflow_enabled(self) -> bool:
+        policy = self.config.verification.generated_tests
+        return bool(self.config.verification.mode == "contract" and policy.enabled and policy.require_candidate_before_completion)
+
+    def _generated_test_reminder_due(
+        self,
+        step: int,
+        generated_test_state: Callable[[], dict[str, int]] | None,
+    ) -> bool:
+        if not self._generated_test_workflow_enabled() or generated_test_state is None:
+            return False
+        state = generated_test_state()
+        if state.get("registered_candidates", 0) > 0:
+            return False
+        policy = self.config.verification.generated_tests
+        return step >= policy.reminder_after_steps and (step - policy.reminder_after_steps) % policy.reminder_interval_steps == 0
+
+    @staticmethod
+    def _generated_test_workflow_reminder() -> str:
+        return (
+            "You have not registered an issue-reproduction test. Stop broad repository exploration. "
+            "Create a focused test, run it, and call register_test_candidate before continuing."
+        )
+
+    @staticmethod
+    def _generated_test_final_checklist() -> str:
+        return (
+            "Final generated-test checklist: a focused issue-reproduction test must have been run and registered, "
+            "and its validation result inspected. A generated test does not replace the frozen verification contract."
         )
 
     def _knowledge_decision_pending(self) -> bool:

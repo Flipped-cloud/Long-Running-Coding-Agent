@@ -15,6 +15,7 @@ from longrun_agent.evaluation.schema import (
     TerminationReason,
     TrialStatus,
 )
+from longrun_agent.evaluation.tool_calls import summarize_tool_calls
 
 
 class FakeAdapter:
@@ -106,10 +107,11 @@ def test_coordinator_isolates_resumes_and_continues_after_trial_error(tmp_path: 
     completed = next(item for item in results if item.outcome is not None)
     assert completed.metadata["mode"] == "default"
     assert completed.metadata["context_mode"] == "unknown"
-    assert completed.metadata["evaluation_semantics_version"] == "v0.5.1-runtime-oracle-split"
+    assert completed.metadata["evaluation_semantics_version"] == "v0.5.5-sandbox-attribution"
     events = [json.loads(line) for line in coordinator.events_path.read_text(encoding="utf-8").splitlines()]
     event_types = {event["event_type"] for event in events}
-    assert {"progress_snapshot_created", "trajectory_features_extracted", "failure_attribution_created"} <= event_types
+    assert {"progress_snapshot_created", "trajectory_features_extracted"} <= event_types
+    assert "failure_attribution_created" not in event_types
     required_fields = {
         "project_id",
         "task_id",
@@ -172,3 +174,41 @@ def test_coordinator_retries_error_with_upsert_and_skips_completed_resume(tmp_pa
     assert adapter.runs == 2
     assert len(coordinator.results_path.read_text(encoding="utf-8").splitlines()) == 1
     assert len(read_trial_attempts(coordinator.attempts_path)) == 2
+
+
+def test_tool_call_summary_uses_only_unique_tool_started_events(tmp_path: Path) -> None:
+    events_path = tmp_path / "telemetry" / "run" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    started = {
+        "run_id": "run",
+        "step": 3,
+        "event_type": "tool_started",
+        "tool_call_id": "call-1",
+        "tool_name": "read_file",
+    }
+    finished = {
+        **started,
+        "event_type": "tool_finished",
+        "success": False,
+        "error_type": "tool_error",
+        "duration_seconds": 0.25,
+    }
+    events_path.write_text(
+        "\n".join(json.dumps(item) for item in [started, started, finished]) + "\n",
+        encoding="utf-8",
+    )
+
+    calls = summarize_tool_calls([events_path])
+
+    assert calls == [
+        {
+            "run_id": "run",
+            "step": 3,
+            "tool_call_id": "call-1",
+            "tool_name": "read_file",
+            "success": False,
+            "error_type": "tool_error",
+            "duration": 0.25,
+        }
+    ]
+    assert not (tmp_path / "telemetry" / "run" / "prompts").exists()

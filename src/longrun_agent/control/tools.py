@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
+
 from pydantic import BaseModel, Field
 
-from longrun_agent.control.channel import ControlSignal, ControlSignalType, TaskControlChannel
+from longrun_agent.control.channel import ControlSignal, ControlSignalType, GeneratedTestRequirementError, TaskControlChannel
 from longrun_agent.protocol import ErrorType, ToolResult
 from longrun_agent.tools.base import BaseTool, ToolContext
 
@@ -101,6 +103,18 @@ class RequestTaskCompletionTool(BaseTool):
                 )
             )
             return _success(call_id, self.name, "task completion requested")
+        except GeneratedTestRequirementError as exc:
+            return ToolResult(
+                tool_call_id=call_id,
+                tool_name=self.name,
+                success=False,
+                summary="generated-test completion requirement is not satisfied",
+                output=json.dumps(exc.payload, sort_keys=True),
+                metadata=exc.payload,
+                error_type=ErrorType.GENERATED_TEST_REQUIREMENT_UNMET,
+                error_message="generated_test_requirement_unmet",
+                retryable=bool(exc.payload["retryable"]),
+            )
         except ValueError as exc:
             return _failure(call_id, self.name, exc)
 
@@ -137,12 +151,26 @@ class RegisterTestCandidateTool(BaseTool):
     def execute(self, call_id: str, arguments: RegisterTestCandidateArgs, context: ToolContext) -> ToolResult:
         try:
             candidate = _channel(context).register_test_candidate(**arguments.model_dump())
+            rejection = candidate.rejection_reasons[0] if candidate.rejection_reasons else None
+            feedback = {
+                "candidate_id": candidate.candidate_id,
+                "transition": candidate.transition.value if candidate.transition else None,
+                "valid": candidate.valid,
+                "rejection_category": rejection,
+                "sanitized_reason": rejection or "candidate validation passed",
+                "recommended_next_action": (
+                    "Run regression tests and request task completion."
+                    if candidate.valid
+                    else "Revise the focused issue-reproduction test and register a new candidate."
+                ),
+            }
             return ToolResult(
                 tool_call_id=call_id,
                 tool_name=self.name,
                 success=True,
                 summary=f"test candidate registered: {candidate.candidate_id}",
-                metadata={"candidate_id": candidate.candidate_id},
+                output=json.dumps(feedback, sort_keys=True),
+                metadata=feedback,
             )
         except ValueError as exc:
             return _failure(call_id, self.name, exc)

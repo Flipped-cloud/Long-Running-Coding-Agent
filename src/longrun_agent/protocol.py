@@ -16,6 +16,12 @@ class ErrorType(StrEnum):
     INVALID_TOOL_ARGUMENTS = "invalid_tool_arguments"
     TOOL_INTERNAL = "tool_internal_error"
     ENVIRONMENT = "environment_observation"
+    GENERATED_TEST_REQUIREMENT_UNMET = "generated_test_requirement_unmet"
+    WORKSPACE_ACCESS_DENIED = "workspace_access_denied"
+    PRIVATE_DATA_BLOCKED = "private_data_blocked"
+    SANDBOX_RUNTIME_ERROR = "sandbox_runtime_error"
+    EVALUATION_SANDBOX_UNAVAILABLE = "evaluation_sandbox_unavailable"
+    EVALUATION_SANDBOX_RUNTIME_UNAVAILABLE = "evaluation_sandbox_runtime_unavailable"
 
 
 class RunStatus(StrEnum):
@@ -173,6 +179,8 @@ class EventRecord(BaseModel):
     artifact_path: str | None = None
     error_type: str | None = None
     error_message: str | None = None
+    retryable: bool | None = None
+    sanitized_message: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
 

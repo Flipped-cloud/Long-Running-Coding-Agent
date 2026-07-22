@@ -7,7 +7,8 @@ from pydantic import BaseModel, Field, model_validator
 from longrun_agent.exceptions import WorkspaceSecurityError
 from longrun_agent.protocol import ErrorType, ToolResult
 from longrun_agent.tools.base import BaseTool, ToolContext
-from longrun_agent.tools.path_guard import relative_to_workspace, resolve_workspace_path
+from longrun_agent.tools.path_guard import relative_to_workspace
+from longrun_agent.tools.workspace_policy import ACCESS_DENIED_MESSAGE, WorkspaceAccessDenied
 
 
 class ReadFileArgs(BaseModel):
@@ -33,7 +34,7 @@ class ReadFileTool(BaseTool):
 
     def execute(self, call_id: str, arguments: ReadFileArgs, context: ToolContext) -> ToolResult:
         try:
-            path = resolve_workspace_path(context.workspace, arguments.path, must_exist=True)
+            path = context.workspace_policy.resolve_read(arguments.path, must_exist=True)
             if path.is_dir():
                 raise IsADirectoryError(arguments.path)
             if _looks_binary(path):
@@ -85,6 +86,17 @@ class ReadFileTool(BaseTool):
                     "size_bytes": len(raw_bytes),
                     "modified_time_ns": stat.st_mtime_ns,
                 },
+            )
+        except WorkspaceAccessDenied:
+            return ToolResult(
+                tool_call_id=call_id,
+                tool_name=self.name,
+                success=False,
+                summary="read_file denied by workspace policy",
+                output=ACCESS_DENIED_MESSAGE,
+                error_type=ErrorType.WORKSPACE_ACCESS_DENIED,
+                error_message=ACCESS_DENIED_MESSAGE,
+                retryable=True,
             )
         except (FileNotFoundError, WorkspaceSecurityError, UnicodeDecodeError, IsADirectoryError) as exc:
             return ToolResult(

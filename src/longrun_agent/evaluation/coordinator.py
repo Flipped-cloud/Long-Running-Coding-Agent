@@ -144,16 +144,20 @@ class EvaluationCoordinator:
                 termination_reason=outcome.termination_reason,
                 features=features,
                 events=events,
+                oracle_verification_verdict=outcome.oracle_verification_verdict,
+                integrity_passed=outcome.integrity_passed,
+                runtime_verification_verdict=outcome.runtime_verification_verdict,
             )
-            outcome.failure_attribution_id = attribution.attribution_id
-            self._event(
-                "failure_attribution_created",
-                project_id=outcome.project_id,
-                trial_id=descriptor.trial_id,
-                case_id=case.case_id,
-                sanitized_reason=attribution.primary_code,
-                evidence_ids=attribution.evidence_event_ids,
-            )
+            if attribution is not None:
+                outcome.failure_attribution_id = attribution.attribution_id
+                self._event(
+                    "failure_attribution_created",
+                    project_id=outcome.project_id,
+                    trial_id=descriptor.trial_id,
+                    case_id=case.case_id,
+                    sanitized_reason=attribution.primary_code,
+                    evidence_ids=attribution.evidence_event_ids,
+                )
             descriptor.status = TrialStatus.COMPLETED
             result = TrialResult(
                 descriptor=descriptor,
@@ -177,7 +181,13 @@ class EvaluationCoordinator:
         except Exception as exc:
             descriptor.status = TrialStatus.ERROR
             self._event("trial_error", trial_id=descriptor.trial_id, case_id=case.case_id, sanitized_reason=str(exc))
-            return TrialResult(descriptor=descriptor, error=f"{type(exc).__name__}: {exc}")
+            error = f"{type(exc).__name__}: {exc}"
+            attribution = FailureAttributor().attribute_error(
+                case_id=case.case_id,
+                trial_id=descriptor.trial_id,
+                explanation=f"Evaluation harness failed with {type(exc).__name__}.",
+            )
+            return TrialResult(descriptor=descriptor, attribution=attribution, error=error)
         finally:
             adapter.cleanup(case, descriptor)
             if not self.preserve_workspaces and descriptor.status == TrialStatus.COMPLETED:
@@ -221,7 +231,7 @@ def _collect_events(trial_dir: Path) -> list[dict[str, Any]]:
 
 def _allowed_event_paths(trial_dir: Path) -> list[Path]:
     allowed = [
-        *sorted((trial_dir / "state").glob("*/events.jsonl")),
+        *sorted((trial_dir / "state").glob("*/project_events.jsonl")),
         *sorted((trial_dir / "state").glob("*/verification/events.jsonl")),
         trial_dir / "knowledge" / "events.jsonl",
         trial_dir / "knowledge" / "uses.jsonl",

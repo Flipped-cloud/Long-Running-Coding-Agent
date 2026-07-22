@@ -266,17 +266,38 @@ class VerificationGateway:
         validator = TestCandidateValidator(self.snapshot_manager, self.runner)
         validated = []
         for candidate in candidates:
-            result = validator.validate(candidate, candidate_root)
-            self.store.save_test_candidate(result)
-            self.store.append_verification_event(
-                "test_candidate_validated",
-                task_id=result.task_id,
-                session_id=result.session_id,
-                sanitized_reason=(result.transition.value if result.transition else "invalid"),
-                evidence_ids=[result.candidate_id],
+            result = (
+                candidate
+                if candidate.transition is not None and candidate.baseline_result is not None and candidate.candidate_result is not None
+                else validator.validate(candidate, candidate_root)
             )
+            self.store.save_test_candidate(result)
+            if result is not candidate:
+                self._record_candidate_validation(result)
             validated.append(result)
         return validated
+
+    def validate_test_candidate(self, candidate: TestCandidate) -> TestCandidate:
+        candidate_root, _manifest = self.snapshot_manager.create_candidate()
+        try:
+            result = TestCandidateValidator(self.snapshot_manager, self.runner).validate(candidate, candidate_root)
+        finally:
+            self.snapshot_manager.cleanup(candidate_root)
+        self.store.save_test_candidate(result)
+        self._record_candidate_validation(result)
+        return result
+
+    def _record_candidate_validation(self, result: TestCandidate) -> None:
+        self.store.append_verification_event(
+            "test_candidate_validated",
+            task_id=result.task_id,
+            session_id=result.session_id,
+            sanitized_reason=(result.transition.value if result.transition else "invalid"),
+            verdict=result.transition.value if result.transition else "invalid",
+            valid=result.valid,
+            rejection_category=result.rejection_reasons[0] if result.rejection_reasons else None,
+            evidence_ids=[result.candidate_id],
+        )
 
     def _invalid_contract(self, contract: VerificationContract, task_id: str | None, reason: str) -> VerificationReport:
         return VerificationReport(

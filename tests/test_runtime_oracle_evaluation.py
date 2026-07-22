@@ -22,6 +22,7 @@ from longrun_agent.evaluation.schema import (
 )
 from longrun_agent.state.schema import ProjectState, ProjectStatus, TaskNode, TaskStatus
 from longrun_agent.state.store import ProjectStateStore
+from longrun_agent.verification.contract import load_contract, split_contract
 from longrun_agent.verification.schema import (
     VerificationPurpose,
     VerificationReport,
@@ -370,4 +371,8 @@ def _oracle_trial(tmp_path: Path, mode: str) -> tuple[Path, EvaluationTaskCase, 
         trial_dir=tmp_path / "trial",
     )
     case = EvaluationTaskCase(case_id="case", fixture=workspace, task_file=Path("TASK.md"), contract_path=contract)
+    _, private = split_contract(load_contract(contract, workspace_root=workspace))
+    private_path = descriptor.trial_dir / "oracle" / "private" / "contract.json"
+    private_path.parent.mkdir(parents=True)
+    private_path.write_text(private.model_dump_json(indent=2), encoding="utf-8")
     return workspace, case, descriptor

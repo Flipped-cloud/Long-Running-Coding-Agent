@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from longrun_agent.verification.gateway import VerificationGateway
+from longrun_agent.verification.generated_tests import register_test_candidate
 from longrun_agent.verification.runner import VerificationRunner
 from longrun_agent.verification.schema import (
     CheckKind,
@@ -107,3 +108,43 @@ def test_gateway_contract_hash_mismatch_is_contract_invalid(tmp_path: Path) -> N
     gateway = VerificationGateway(store=store, snapshot_manager=snapshots, runner=VerificationRunner(store.root / "artifacts"))
     contract.project_id = "tampered"
     assert gateway.verify(contract).verdict == VerificationVerdict.CONTRACT_INVALID
+
+
+def test_valid_generated_test_does_not_replace_failing_frozen_contract(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = workspace / "app.py"
+    app.write_text("VALUE = 0\n", encoding="utf-8")
+    contract = VerificationContract(
+        contract_id="c4",
+        project_id="p4",
+        checks=[
+            VerificationCheck(
+                check_id="resolution",
+                title="resolve issue",
+                kind=CheckKind.RESOLUTION,
+                argv=[sys.executable, "-c", "import app; raise SystemExit(0 if app.VALUE == 2 else 1)"],
+            )
+        ],
+    )
+    gateway, snapshots, frozen = _gateway(tmp_path, workspace, contract)
+    snapshots.create_baseline()
+    app.write_text("VALUE = 1\n", encoding="utf-8")
+    (workspace / "test_candidate.py").write_text("import app\nassert app.VALUE == 1\n", encoding="utf-8")
+    candidate = register_test_candidate(
+        workspace=workspace,
+        task_id="task",
+        session_id="session",
+        paths=["test_candidate.py"],
+        command_argv=[sys.executable, "test_candidate.py"],
+        issue_behavior="VALUE should change from the baseline",
+        expected_failure_reason="the baseline value is zero",
+    )
+
+    validated = gateway.validate_test_candidate(candidate)
+    report = gateway.verify(frozen, test_candidates=[validated])
+
+    assert validated.valid
+    assert validated.transition is not None and validated.transition.value == "F2P"
+    assert report.test_candidates[0].valid
+    assert report.verdict == VerificationVerdict.REOPENED

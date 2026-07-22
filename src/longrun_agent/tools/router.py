@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from longrun_agent.protocol import ErrorType, ToolCall, ToolResult
 from longrun_agent.tools.arguments import ArgumentNormalization, ToolArgumentError
 from longrun_agent.tools.base import BaseTool, ToolContext
+from longrun_agent.tools.result_guard import sanitize_agent_visible_tool_result
 
 
 class ToolRouter:
@@ -35,6 +36,7 @@ class ToolRouter:
         try:
             args = tool.args_model.model_validate(call.arguments, context=validation_context)
             result = tool.execute(call.id, args, context)
+            result = sanitize_agent_visible_tool_result(result, context.workspace_policy)
             result.metadata.setdefault("duration_seconds", time.monotonic() - started)
             _attach_normalizations(result.metadata, validation_context["argument_normalizations"])
             return result

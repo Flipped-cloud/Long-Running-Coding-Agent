@@ -6,17 +6,16 @@ from typing import Any
 
 from longrun_agent.evaluation.schema import AdapterVerificationResult, EvaluationTaskCase, TrialDescriptor
 from longrun_agent.state.schema import utc_now
-from longrun_agent.verification.contract import load_contract
 from longrun_agent.verification.gateway import VerificationGateway
 from longrun_agent.verification.runner import VerificationRunner
-from longrun_agent.verification.schema import VerificationPurpose
+from longrun_agent.verification.schema import OraclePrivateContract, VerificationPurpose
 from longrun_agent.verification.snapshot import CopySnapshotProvider
 from longrun_agent.verification.store import VerificationStore
 
 
 class OfflineOracleEvaluator:
     def prepare_baseline(self, *, case: EvaluationTaskCase, descriptor: TrialDescriptor, workspace: Path) -> None:
-        self._require_contract(case)
+        self._load_private_contract(descriptor)
         root = self._oracle_root(descriptor)
         snapshots = CopySnapshotProvider(workspace, root / "snapshots")
         manifest = snapshots.create_baseline()
@@ -43,14 +42,14 @@ class OfflineOracleEvaluator:
         project_id: str,
         final_workspace: Path,
     ) -> AdapterVerificationResult:
-        contract_path = self._require_contract(case)
+        private = self._load_private_contract(descriptor)
         root = self._oracle_root(descriptor)
         snapshots = CopySnapshotProvider(final_workspace, root / "snapshots")
         if not snapshots.baseline_manifest_path.exists():
             raise ValueError("oracle baseline is missing; reset must create it before the agent runs")
 
-        source_contract = load_contract(contract_path, workspace_root=final_workspace)
-        source_contract_hash = source_contract.freeze().contract_hash
+        source_contract = private.contract
+        source_contract_hash = private.private_fingerprint
         if source_contract.project_id == "__PROJECT_ID__":
             source_contract = source_contract.model_copy(update={"project_id": project_id})
         elif source_contract.project_id != project_id:
@@ -114,13 +113,11 @@ class OfflineOracleEvaluator:
         )
 
     @staticmethod
-    def _require_contract(case: EvaluationTaskCase) -> Path:
-        if case.contract_path is None:
-            raise ValueError(f"evaluation case {case.case_id!r} requires contract_path for offline oracle evaluation")
-        path = case.contract_path.resolve()
+    def _load_private_contract(descriptor: TrialDescriptor) -> OraclePrivateContract:
+        path = descriptor.trial_dir / "oracle" / "private" / "contract.json"
         if not path.exists():
-            raise ValueError(f"offline oracle contract does not exist: {path}")
-        return path
+            raise ValueError("oracle private contract is missing; prepare must freeze it before execution")
+        return OraclePrivateContract.model_validate_json(path.read_text(encoding="utf-8"))
 
     @staticmethod
     def _oracle_root(descriptor: TrialDescriptor) -> Path:

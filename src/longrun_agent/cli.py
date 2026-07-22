@@ -32,6 +32,7 @@ knowledge_app = typer.Typer(add_completion=False)
 knowledge_memories_app = typer.Typer(add_completion=False)
 knowledge_skills_app = typer.Typer(add_completion=False)
 knowledge_retrieval_app = typer.Typer(add_completion=False)
+sandbox_app = typer.Typer(add_completion=False)
 app.add_typer(project_app, name="project")
 app.add_typer(context_app, name="context")
 app.add_typer(eval_app, name="eval")
@@ -41,6 +42,7 @@ app.add_typer(knowledge_app, name="knowledge")
 knowledge_app.add_typer(knowledge_memories_app, name="memories")
 knowledge_app.add_typer(knowledge_skills_app, name="skills")
 knowledge_app.add_typer(knowledge_retrieval_app, name="retrieval")
+app.add_typer(sandbox_app, name="sandbox")
 console = Console()
 
 
@@ -117,6 +119,37 @@ def tools(
     load_config(config)
     for schema in default_router().schemas():
         console.print_json(json.dumps(schema))
+
+
+@sandbox_app.command("doctor")
+def sandbox_doctor(
+    config: Path = typer.Option(..., exists=True, file_okay=True, dir_okay=False),
+) -> None:
+    from longrun_agent.tools.sandbox import (
+        EvaluationSandboxRuntimeUnavailable,
+        EvaluationSandboxUnavailable,
+        build_subprocess_sandbox,
+    )
+    from longrun_agent.tools.workspace_policy import WorkspaceAccessPolicy
+
+    app_config = load_config(config)
+    denied_roots = [app_config.state.root, app_config.telemetry.run_root]
+    if app_config.verification.contract.path is not None:
+        denied_roots.append(app_config.verification.contract.path.parent)
+    policy = WorkspaceAccessPolicy.for_workspace(
+        app_config.workspace.root,
+        evaluation_isolation_enabled=True,
+        denied_roots=denied_roots,
+    )
+    try:
+        report = build_subprocess_sandbox(policy).preflight()
+    except EvaluationSandboxRuntimeUnavailable:
+        console.print_json(json.dumps({"status": "NO_GO", "error_code": "EVALUATION_SANDBOX_RUNTIME_UNAVAILABLE"}))
+        raise typer.Exit(code=2) from None
+    except EvaluationSandboxUnavailable:
+        console.print_json(json.dumps({"status": "NO_GO", "error_code": "EVALUATION_SANDBOX_UNAVAILABLE"}))
+        raise typer.Exit(code=2) from None
+    console.print_json(json.dumps(report))
 
 
 def _task_text(task: str | None, task_file: Path | None) -> str:
@@ -627,6 +660,27 @@ def eval_report(
         "false_completion": metrics.get("false_completion_count", {}),
     }
     console.print_json(json.dumps(payload))
+
+
+@eval_app.command("rebuild-report")
+def eval_rebuild_report(
+    run_root: Path = typer.Option(..., exists=True, file_okay=False),
+) -> None:
+    from longrun_agent.evaluation.rebuild import rebuild_evaluation_report
+
+    console.print_json(json.dumps(rebuild_evaluation_report(run_root)))
+
+
+@eval_app.command("leakage-check")
+def eval_leakage_check(
+    run_root: Path = typer.Option(..., exists=True, file_okay=False),
+) -> None:
+    from longrun_agent.evaluation.leakage import check_evaluation_leakage
+
+    report = check_evaluation_leakage(run_root)
+    console.print_json(json.dumps(report))
+    if report["leak_count"]:
+        raise typer.Exit(code=2)
 
 
 @eval_app.command("failures")

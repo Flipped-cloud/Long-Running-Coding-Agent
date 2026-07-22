@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
@@ -140,3 +141,44 @@ def test_cli_protocol_error_exit_code_is_one(tmp_path: Path):
 def test_cli_missing_config_returns_nonzero():
     result = runner.invoke(app, ["run", "--config", "does-not-exist.yaml", "--fake-provider"])
     assert result.exit_code != 0
+
+
+def test_sandbox_doctor_reports_preflight_without_creating_provider(tmp_path: Path, monkeypatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = tmp_path / "fake.yaml"
+    write_fake_config(config, repo, tmp_path / ".runs")
+    report = {
+        "status": "GO",
+        "python_runtime_available": True,
+        "outside_workspace_hidden": True,
+        "trusted_runtime_read_only": True,
+    }
+    monkeypatch.setattr(
+        "longrun_agent.tools.sandbox.build_subprocess_sandbox",
+        lambda _policy: SimpleNamespace(preflight=lambda: report),
+    )
+    monkeypatch.setattr("longrun_agent.cli._provider", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("provider called")))
+
+    result = runner.invoke(app, ["sandbox", "doctor", "--config", str(config)])
+
+    assert result.exit_code == 0
+    assert '"status": "GO"' in result.stdout
+
+
+def test_sandbox_doctor_reports_runtime_unavailable(tmp_path: Path, monkeypatch) -> None:
+    from longrun_agent.tools.sandbox import EvaluationSandboxRuntimeUnavailable
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = tmp_path / "fake.yaml"
+    write_fake_config(config, repo, tmp_path / ".runs")
+
+    def unavailable(_policy):
+        raise EvaluationSandboxRuntimeUnavailable("EVALUATION_SANDBOX_RUNTIME_UNAVAILABLE")
+
+    monkeypatch.setattr("longrun_agent.tools.sandbox.build_subprocess_sandbox", unavailable)
+    result = runner.invoke(app, ["sandbox", "doctor", "--config", str(config)])
+
+    assert result.exit_code == 2
+    assert "EVALUATION_SANDBOX_RUNTIME_UNAVAILABLE" in result.stdout
