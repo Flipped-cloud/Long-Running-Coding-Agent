@@ -18,8 +18,12 @@ def test_report_progress_records_multiple_signals(tmp_path: Path):
         ToolCall(id="p1", name="report_progress", arguments={"summary": "read files", "files_touched": ["a.py"]}),
         context(tmp_path, channel),
     )
-    router.execute(ToolCall(id="p2", name="report_progress", arguments={"summary": "ran tests"}), context(tmp_path, channel))
+    result = router.execute(
+        ToolCall(id="p2", name="report_progress", arguments={"summary": "ran tests"}),
+        context(tmp_path, channel),
+    )
     assert [signal.type for signal in channel.signals] == [ControlSignalType.PROGRESS, ControlSignalType.PROGRESS]
+    assert "Continue implementation" in result.output
 
 
 def test_terminal_signal_conflict_returns_structured_error(tmp_path: Path):
@@ -46,6 +50,35 @@ def test_request_decomposition_records_terminal_signal(tmp_path: Path):
     )
     assert result.success
     assert channel.terminal_signal.type == ControlSignalType.DECOMPOSITION_REQUEST
+
+
+def test_report_blocker_rejects_resumable_workspace_work(tmp_path: Path):
+    channel = TaskControlChannel()
+    result = ToolRouter([ReportBlockerTool()]).execute(
+        ToolCall(
+            id="b1",
+            name="report_blocker",
+            arguments={"reason": "cli.py still needs editing", "attempted_actions": ["pytest"]},
+        ),
+        context(tmp_path, channel),
+    )
+    assert not result.success
+    assert result.error_type.value == "policy_gate"
+    assert channel.terminal_signal is None
+
+
+def test_report_blocker_accepts_external_condition(tmp_path: Path):
+    channel = TaskControlChannel()
+    result = ToolRouter([ReportBlockerTool()]).execute(
+        ToolCall(
+            id="b1",
+            name="report_blocker",
+            arguments={"reason": "required service is unavailable", "attempted_actions": ["health check"], "external": True},
+        ),
+        context(tmp_path, channel),
+    )
+    assert result.success
+    assert channel.terminal_signal.type == ControlSignalType.BLOCKER
 
 
 def test_control_tool_without_channel_returns_error(tmp_path: Path):

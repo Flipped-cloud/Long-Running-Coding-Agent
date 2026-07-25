@@ -40,4 +40,10 @@ def test_context_reset_stays_inside_same_project_task_session(tmp_path: Path):
     assert session["context_segment_count"] == 2
     assert session["latest_context_handoff_id"]
     assert store.load_handoff("ctx-reset", session["latest_context_handoff_id"]).task_id == task.id
-    assert {event["event_type"] for event in store.read_context_events("ctx-reset")} >= {"context_handoff_created", "context_reset"}
+    context_events = store.read_context_events("ctx-reset")
+    assert {event["event_type"] for event in context_events} >= {"context_handoff_created", "context_reset"}
+    assert all(
+        event["handoff_id"]
+        for event in context_events
+        if event["event_type"] in {"context_handoff_created", "context_segment_closed", "context_segment_started", "context_reset"}
+    )

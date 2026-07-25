@@ -103,7 +103,7 @@ def _display_command(arguments: BashArgs) -> str:
 
 def _verification_kind(command: str) -> str | None:
     lowered = command.lower()
-    if "pytest" in lowered:
+    if "pytest" in lowered and "--collect-only" not in lowered and not re.search(r"(^|\s)--co(\s|$)", lowered):
         return "pytest"
     if "task_service.cli" in lowered or " validate" in f" {lowered} ":
         return "acceptance"

@@ -136,11 +136,11 @@ class ContextLifecycleManager:
         if self.compactor.fallback_count:
             self._emit(
                 "context_handoff_fallback_created",
-                {"handoff_id": handoff.handoff_id, **self._base_payload(step=step, snapshot=before)},
+                {**self._base_payload(step=step, snapshot=before), "handoff_id": handoff.handoff_id},
             )
         if self.store and handoff.project_id:
             self.store.save_handoff(handoff)
-        self._emit("context_handoff_created", {"handoff_id": handoff.handoff_id, **self._base_payload(step=step, snapshot=before)})
+        self._emit("context_handoff_created", {**self._base_payload(step=step, snapshot=before), "handoff_id": handoff.handoff_id})
         new_segment = buffer.reset_to(
             task_anchor_message=self.assembler.task_anchor_message(self.seed),
             handoff_message=self.assembler.handoff_message(handoff),
@@ -180,9 +180,9 @@ class ContextLifecycleManager:
                 )
             )
         self._record_budget(after_reset)
-        self._emit("context_segment_closed", {"handoff_id": handoff.handoff_id, **self._base_payload(step=step, snapshot=before)})
-        self._emit("context_segment_started", {"handoff_id": handoff.handoff_id, **self._base_payload(step=step, snapshot=after_reset)})
-        self._emit("context_reset", {"handoff_id": handoff.handoff_id, **self._base_payload(step=step, snapshot=after_reset)})
+        self._emit("context_segment_closed", {**self._base_payload(step=step, snapshot=before), "handoff_id": handoff.handoff_id})
+        self._emit("context_segment_started", {**self._base_payload(step=step, snapshot=after_reset), "handoff_id": handoff.handoff_id})
+        self._emit("context_reset", {**self._base_payload(step=step, snapshot=after_reset), "handoff_id": handoff.handoff_id})
         if self.budget.should_hard_stop(after_reset):
             return self._budget_exhausted(reset_messages, before, step, "reset context still exceeds hard_stop_ratio", after_reset)
         return ContextPreparationResult(

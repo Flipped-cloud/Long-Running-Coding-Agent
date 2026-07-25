@@ -164,15 +164,19 @@ class AgentLoop:
                     context_buffer.add_user_reminder(
                         "Final model turn: retrieved knowledge is awaiting a Knowledge Decision. "
                         "First call report_knowledge_use with referenced IDs, or empty ID lists and a reason if none were used. "
-                        "Then call request_task_completion if the acceptance criteria are satisfied, otherwise call report_blocker."
+                        "Then call request_task_completion if the acceptance criteria are satisfied; otherwise call report_progress "
+                        "with a concise handoff. Use report_blocker only for an external condition that another Session cannot fix."
                     )
                 elif completion_evidence is not None and completion_evidence():
                     context_buffer.add_user_reminder(
-                        "Final model turn: implementation and verification evidence already exists. Only call request_task_completion if the acceptance criteria are satisfied, otherwise call report_blocker with the exact remaining issue. Do not run more tools."
+                        "Final model turn: implementation and verification evidence already exists. Call request_task_completion "
+                        "if the acceptance criteria are satisfied; otherwise call report_progress with the exact remaining work. "
+                        "Do not report code defects or remaining edits as blockers."
                     )
                 else:
                     context_buffer.add_user_reminder(
-                        "Final model turn: no completion evidence is recorded. Call report_blocker with the exact remaining issue, or request_task_completion only if you can cite satisfied acceptance criteria from existing observations."
+                        "Final model turn: no completion evidence is recorded. Call report_progress with a concise handoff for the "
+                        "next Session. Use report_blocker only for a missing external permission, dependency, service, or infrastructure."
                     )
             tools_for_request = self._schemas(terminal_tools_only=terminal_tools_only)
             preparation = context_manager.prepare(context_buffer, tools_for_request, step=step)
@@ -611,7 +615,7 @@ class AgentLoop:
         schemas = self.router.schemas()
         if not terminal_tools_only:
             return schemas
-        allowed = {"request_task_completion", "report_blocker", "report_knowledge_use"}
+        allowed = {"request_task_completion", "report_blocker", "report_knowledge_use", "report_progress"}
         return [schema for schema in schemas if schema.get("function", {}).get("name") in allowed]
 
     def _terminal_grace_reminder(self) -> str:
@@ -619,11 +623,11 @@ class AgentLoop:
             return (
                 "Verification evidence is complete and retrieved knowledge is still awaiting a Knowledge Decision. "
                 "First call report_knowledge_use with referenced IDs, or empty ID lists and a reason if none were used. "
-                "Then call request_task_completion if the acceptance criteria are satisfied, otherwise call report_blocker."
+                "Then call request_task_completion if the acceptance criteria are satisfied; otherwise call report_progress."
             )
         return (
             "Verification evidence is complete. A completion candidate has been generated. "
-            "Confirm completion by calling request_task_completion. Otherwise call report_blocker with the exact remaining issue. "
+            "Confirm completion by calling request_task_completion. Otherwise call report_progress with the exact remaining work. "
             "Do not perform more exploration."
         )
 

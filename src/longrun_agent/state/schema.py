@@ -102,6 +102,8 @@ class PlanRevision(BaseModel):
 class ProjectState(BaseModel):
     project_id: str = Field(min_length=1)
     objective: str = Field(min_length=1)
+    workspace_root: str | None = None
+    initial_plan_file: str | None = None
     status: ProjectStatus = ProjectStatus.ACTIVE
     plan_version: int = Field(default=0, ge=0)
     tasks: list[TaskNode] = Field(default_factory=list)

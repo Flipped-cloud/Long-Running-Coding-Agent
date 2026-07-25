@@ -45,3 +45,15 @@ def test_bash_returns_normalized_command_and_verification_kind(tmp_path: Path):
     assert result.success
     assert result.metadata["normalized_command"] == render_command(["python", "-c", "print('ok')"])
     assert "combined_artifact" in result.metadata
+
+
+def test_pytest_collect_only_has_no_verification_kind(tmp_path: Path):
+    (tmp_path / "test_sample.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    result = ToolRouter([BashTool()]).execute(
+        ToolCall(id="b1", name="bash", arguments={"argv": ["python", "-m", "pytest", "--collect-only", "-q"]}),
+        ToolContext(tmp_path, config=ToolsConfig()),
+    )
+
+    assert result.success
+    assert result.metadata["exit_code"] == 0
+    assert result.metadata["verification_kind"] is None

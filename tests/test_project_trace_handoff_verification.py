@@ -63,7 +63,8 @@ def test_handoff_and_no_progress_are_recorded_after_max_steps(tmp_path: Path):
     assert session["no_progress"] is True
     assert "Completed work:" in session["handoff_summary"]
     assert "Next required action:" in session["handoff_summary"]
-    assert "Do not repeat:" in session["handoff_summary"]
+    assert "Context boundary:" in session["handoff_summary"]
+    assert "re-read files needed for correctness" in session["handoff_summary"]
     assert state.task_by_id("handoff-1:T1").consecutive_no_progress_sessions == 1
     assert "session_handoff_created" in {event["event_type"] for event in store.read_events("handoff-1")}
 

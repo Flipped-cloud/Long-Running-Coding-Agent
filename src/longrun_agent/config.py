@@ -25,6 +25,16 @@ def expand_env_vars(value: Any) -> Any:
     return value
 
 
+def referenced_env_vars(value: Any) -> set[str]:
+    if isinstance(value, str):
+        return set(ENV_PATTERN.findall(value))
+    if isinstance(value, list):
+        return set().union(*(referenced_env_vars(item) for item in value))
+    if isinstance(value, dict):
+        return set().union(*(referenced_env_vars(item) for item in value.values()))
+    return set()
+
+
 class ModelConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -512,9 +522,13 @@ def apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
-def load_config(path: str | Path) -> AppConfig:
+def load_config(path: str | Path, *, allow_missing_env: set[str] | None = None) -> AppConfig:
     config_path = Path(path).resolve()
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    missing_env = referenced_env_vars(raw) - set(os.environ) - (allow_missing_env or set())
+    if missing_env:
+        names = ", ".join(sorted(missing_env))
+        raise ConfigurationError(f"missing environment variables required by {config_path}: {names}")
     expanded = apply_env_overrides(expand_env_vars(raw))
     try:
         return AppConfig.model_validate({**expanded, "config_dir": config_path.parent})

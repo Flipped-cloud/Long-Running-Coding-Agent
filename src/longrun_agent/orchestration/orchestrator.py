@@ -4,12 +4,14 @@ import subprocess
 import time
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 from longrun_agent.agent.loop import AgentLoop, default_router
 from longrun_agent.config import AppConfig
 from longrun_agent.context.lifecycle import ContextLifecycleManager
 from longrun_agent.control.channel import ControlSignalType, TaskControlChannel
 from longrun_agent.control.tools import control_tools
+from longrun_agent.exceptions import ConfigurationError
 from longrun_agent.knowledge.consolidator import KnowledgeConsolidator, KnowledgeSessionOutcome
 from longrun_agent.knowledge.evidence import RepositoryProfiler, build_experience_pack
 from longrun_agent.knowledge.renderer import render_bundle
@@ -20,7 +22,7 @@ from longrun_agent.knowledge.tools import KnowledgeUseChannel, ReportKnowledgeUs
 from longrun_agent.model.base import ModelProvider
 from longrun_agent.orchestration.outcome import ProjectRunOutcome
 from longrun_agent.orchestration.session_prompt import build_task_context_seed, build_task_session_prompt
-from longrun_agent.orchestration.session_trace import SessionTrace
+from longrun_agent.orchestration.session_trace import READ_ONLY_STREAK_LIMIT, SessionTrace
 from longrun_agent.planning.decomposer import AsNeededDecomposer
 from longrun_agent.planning.initial_planner import InitialPlanner
 from longrun_agent.planning.recovery_evaluator import RecoveryCandidateEvaluator
@@ -94,8 +96,14 @@ class ProjectOrchestrator:
     def start(self, objective: str) -> ProjectRunOutcome:
         if self.store.exists(self.project_id):
             state = self.store.load(self.project_id)
+            self._validate_runtime_workspace(state)
         else:
-            state = ProjectState(project_id=self.project_id, objective=objective)
+            state = ProjectState(
+                project_id=self.project_id,
+                objective=objective,
+                workspace_root=str(self.config.workspace.root.resolve()),
+                initial_plan_file=self._initial_plan_file(),
+            )
             self.store.create(state)
             self._logger(state).log("project_created", project_id=state.project_id, plan_version=state.plan_version)
         self._initialize_verification(state)
@@ -106,6 +114,7 @@ class ProjectOrchestrator:
     def resume(self, project_id: str) -> ProjectRunOutcome:
         self.project_id = project_id
         state = self.store.load(project_id)
+        self._validate_runtime_workspace(state)
         self._initialize_verification(state)
         if self._verification_initialization_failed():
             return self._outcome(state, 0, [])
@@ -118,6 +127,24 @@ class ProjectOrchestrator:
                     task.updated_at = utc_now()
         self._logger(state).log("project_resumed", project_id=state.project_id, plan_version=state.plan_version)
         return self.run_project(state)
+
+    def _validate_runtime_workspace(self, state: ProjectState) -> None:
+        configured = self.config.workspace.root.resolve()
+        if state.workspace_root is None:
+            state.workspace_root = str(configured)
+            state.initial_plan_file = state.initial_plan_file or self._initial_plan_file()
+            self.store.save(state)
+            return
+        persisted = Path(state.workspace_root).resolve()
+        if configured != persisted:
+            raise ConfigurationError(
+                f"project workspace mismatch: persisted={persisted}, configured={configured}; "
+                "resume must use the original project workspace"
+            )
+
+    def _initial_plan_file(self) -> str | None:
+        plan_file = self.config.planning.initial_plan.plan_file
+        return str(plan_file.resolve()) if plan_file is not None else None
 
     def _initialize_verification(self, state: ProjectState) -> None:
         if self.config.verification.mode != "contract":
@@ -858,7 +885,11 @@ class ProjectOrchestrator:
             )
         task.files_touched = _dedupe([*task.files_touched, *trace.changed_files])
         task.read_files = _dedupe([*task.read_files, *trace.read_files])
-        no_progress = trace.no_progress(progress_count=len(channel.progress_signals), terminal_signal=channel.terminal_signal)
+        substantive_progress_count = sum(bool(signal.files_touched) for signal in channel.progress_signals)
+        no_progress = trace.no_progress(
+            progress_count=substantive_progress_count,
+            terminal_signal=channel.terminal_signal,
+        )
         task.consecutive_no_progress_sessions = task.consecutive_no_progress_sessions + 1 if no_progress else 0
         terminal = channel.terminal_signal
         candidate = None
@@ -1590,6 +1621,21 @@ class _ChannelRouter(ToolRouter):
         self.knowledge_channel = knowledge_channel
         self.action_required_message: str | None = None
 
+    def schemas(self) -> list[dict]:
+        schemas = super().schemas()
+        if self.trace.read_only_streak < READ_ONLY_STREAK_LIMIT:
+            return schemas
+        action_tools = {
+            "write_file",
+            "report_knowledge_use",
+            "report_progress",
+            "report_blocker",
+            "request_task_completion",
+            "request_decomposition",
+            "register_test_candidate",
+        }
+        return [schema for schema in schemas if schema.get("function", {}).get("name") in action_tools]
+
     def execute(self, call, context):
         context.control_channel = self.channel
         context.knowledge_channel = self.knowledge_channel
@@ -1609,7 +1655,7 @@ class _ChannelRouter(ToolRouter):
                 error_message="knowledge_decision_required",
                 metadata={"knowledge_decision_required": True},
             )
-            self.trace.record_policy_gate(result)
+            self.trace.record_policy_gate(result, counts_as_progress=True)
             self.action_required_message = result.output
             return result
         if self.trace.should_suppress(call):
@@ -1620,15 +1666,20 @@ class _ChannelRouter(ToolRouter):
             return ToolResult(
                 tool_call_id=call.id,
                 tool_name=call.name,
-                success=True,
+                success=False,
                 summary="repeated_tool_call_suppressed",
-                output="This exact tool call was made immediately before; reuse the previous observation instead of repeating it.",
+                output=(
+                    "This read-only operation was suppressed. Reuse existing observations. The next model turn exposes "
+                    "action tools only: edit the diagnosed file, complete when verified, or report precise remaining work."
+                ),
+                error_type=ErrorType.POLICY_GATE,
+                error_message="read-only operation suppressed; make progress before requesting more inspection",
                 metadata={"call_key": call_key, "suppressed": True},
             )
         result = super().execute(call, context)
         self.trace.record(call, result)
         if result.error_type == ErrorType.GENERATED_TEST_REQUIREMENT_UNMET:
-            self.trace.record_policy_gate(result)
+            self.trace.record_policy_gate(result, counts_as_progress=True)
             self.action_required_message = result.output
         if result.metadata.get("unsupported_shell_syntax") and self.on_unsupported_shell:
             self.on_unsupported_shell(result)

@@ -17,6 +17,7 @@ def _append_unique(items: list[str], value: str | None) -> None:
 
 
 SECRET_MARKERS = ("api_key", "apikey", "token", "secret", "password", "authorization", "bearer ")
+READ_ONLY_STREAK_LIMIT = 8
 
 
 @dataclass
@@ -58,6 +59,7 @@ class SessionTrace:
     repeated_tool_calls: list[str] = field(default_factory=list)
     suppressed_tool_calls: list[str] = field(default_factory=list)
     policy_gate_count: int = 0
+    actionable_policy_gate_count: int = 0
     unsupported_shell_syntax_count: int = 0
     tool_argument_protocol_retry_count: int = 0
     last_tool_summary: str | None = None
@@ -66,6 +68,7 @@ class SessionTrace:
     action_required_message: str | None = None
     _last_call_key: str | None = None
     _seen_calls: Counter[str] = field(default_factory=Counter)
+    _successful_read_indices: dict[str, int] = field(default_factory=dict)
     _op_index: int = 0
     _last_write_index: int = 0
     _last_successful_verification_index: int = 0
@@ -80,17 +83,29 @@ class SessionTrace:
         return f"{call.name}:{json.dumps(arguments, sort_keys=True, default=_unsupported_argument)}"
 
     def should_suppress(self, call: ToolCall) -> bool:
-        return self._last_call_key == self.call_key(call)
+        key = self.call_key(call)
+        if self._last_call_key == key:
+            return True
+        if self.read_only_streak >= READ_ONLY_STREAK_LIMIT and self._is_read_only_call(call):
+            return True
+        return call.name == "read_file" and self._successful_read_indices.get(key, 0) > self._last_write_index
 
     def record_suppressed(self, call: ToolCall) -> None:
         key = self.call_key(call)
         _append_unique(self.repeated_tool_calls, key)
         _append_unique(self.suppressed_tool_calls, key)
         self.last_tool_summary = "repeated tool call suppressed; previous result is already available"
+        if self._is_read_only_call(call):
+            self.action_required_message = (
+                "action_required: The read-only operation limit was reached and this call was suppressed. "
+                "Use existing observations; next call must edit, run focused tests, complete, or report a blocker."
+            )
         self._last_call_key = key
 
-    def record_policy_gate(self, result: ToolResult) -> None:
+    def record_policy_gate(self, result: ToolResult, *, counts_as_progress: bool = False) -> None:
         self.policy_gate_count += 1
+        if counts_as_progress:
+            self.actionable_policy_gate_count += 1
         self.last_tool_summary = result.summary
 
     def record(self, call: ToolCall, result: ToolResult) -> None:
@@ -102,6 +117,7 @@ class SessionTrace:
         self.last_tool_summary = result.summary
         self._last_call_key = key
         if call.name == "read_file" and result.success:
+            self._successful_read_indices[key] = self._op_index
             _append_unique(self.read_files, str(result.metadata.get("path") or call.arguments.get("path") or ""))
             self._record_read_only_success()
         elif call.name == "write_file" and result.success:
@@ -113,6 +129,7 @@ class SessionTrace:
                 self._reset_read_only_streak()
         elif call.name == "bash":
             command = str(result.metadata.get("command") or "")
+            is_verification = _is_verification_command(command)
             _append_unique(self.bash_commands, command)
             argv = result.metadata.get("argv") or []
             if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
@@ -127,10 +144,10 @@ class SessionTrace:
             exit_code = result.metadata.get("exit_code")
             if isinstance(exit_code, int):
                 self.bash_exit_codes.append(exit_code)
-                if exit_code == 0 and _is_verification_command(command):
+                if exit_code == 0 and is_verification:
                     self._last_successful_verification_index = self._op_index
                     _append_unique(self.successful_acceptance_commands, command)
-                if exit_code == 0 and "pytest" in command:
+                if exit_code == 0 and "pytest" in command and is_verification:
                     _append_unique(self.successful_test_commands, command)
             self.bash_observations.append(
                 BashObservation(
@@ -138,7 +155,7 @@ class SessionTrace:
                     argv=[str(item) for item in argv],
                     exit_code=exit_code if isinstance(exit_code, int) else None,
                     success=result.success,
-                    is_verification=_is_verification_command(command),
+                    is_verification=is_verification,
                     output_excerpt=_safe_excerpt(
                         result.output,
                         artifact_path=str(result.artifact_path or result.metadata.get("output_artifact") or ""),
@@ -151,23 +168,39 @@ class SessionTrace:
             self.last_bash_summary = result.summary
             if result.success and _is_read_only_bash(command):
                 self._record_read_only_success()
+            elif result.success and is_verification and exit_code != 0:
+                self._record_read_only_success()
             elif result.success:
                 self._reset_read_only_streak()
-        elif call.name in {"report_blocker", "request_task_completion", "request_decomposition", "report_progress"} and result.success:
+        elif call.name in {"report_blocker", "request_task_completion", "request_decomposition"} and result.success:
             self._reset_read_only_streak()
 
     def _record_read_only_success(self) -> None:
         self.read_only_streak += 1
-        if self.read_only_streak >= 3:
+        if self.read_only_streak >= READ_ONLY_STREAK_LIMIT:
             self.action_required_message = (
-                "action_required: You have made three consecutive read-only successful tool calls. "
-                "Next call must be write_file, bash running tests, report_blocker, or request_task_completion. "
-                "If information is insufficient, report_blocker instead of blindly editing."
+                f"action_required: You have made {READ_ONLY_STREAK_LIMIT} consecutive read-only successful tool calls. "
+                "The next model turn exposes action tools only. Use write_file based on existing evidence, "
+                "request_task_completion only when verified, or report_progress with the exact missing information. "
+                "Use report_blocker only for an external condition outside the workspace."
             )
 
     def _reset_read_only_streak(self) -> None:
         self.read_only_streak = 0
         self.action_required_message = None
+
+    @staticmethod
+    def _is_read_only_call(call: ToolCall) -> bool:
+        if call.name == "read_file":
+            return True
+        if call.name != "bash":
+            return False
+        try:
+            arguments = BashArgs.model_validate(call.arguments)
+        except (TypeError, ValueError):
+            return False
+        command = " ".join(arguments.argv) if arguments.argv is not None else arguments.command or ""
+        return _is_read_only_bash(command)
 
     def no_progress(self, *, progress_count: int, terminal_signal: object | None) -> bool:
         return (
@@ -175,7 +208,7 @@ class SessionTrace:
             and not self.successful_test_commands
             and progress_count == 0
             and terminal_signal is None
-            and self.policy_gate_count == 0
+            and self.actionable_policy_gate_count == 0
         )
 
     def has_completion_evidence(self, *, existing_changed_files: list[str] | None = None) -> bool:
@@ -198,7 +231,7 @@ class SessionTrace:
         next_actions = [
             "Review the completed work and passed verification listed above.",
             "Verify only any still-unchecked acceptance criterion.",
-            "Call request_task_completion if satisfied; otherwise call report_blocker with the exact remaining issue.",
+            "Call request_task_completion if satisfied; otherwise call report_progress with the exact remaining work.",
         ]
         return "\n".join(
             [
@@ -210,9 +243,9 @@ class SessionTrace:
                 f"- {remaining}",
                 "Next required action:",
                 *[f"- {action}" for action in next_actions[:3]],
-                "Do not repeat:",
-                *([f"- read {path}" for path in self.read_files[-5:]] or ["- no prior reads recorded"]),
-                *([f"- {command}" for command in passed[-3:]] or ["- no passed commands recorded"]),
+                "Context boundary:",
+                "- File contents are not carried into the next Session; re-read files needed for correctness.",
+                "- Avoid exact duplicate calls only when their observations are still present in the current Session.",
             ]
         )
 
@@ -229,6 +262,7 @@ class SessionTrace:
             "repeated_tool_calls": self.repeated_tool_calls,
             "suppressed_tool_calls": self.suppressed_tool_calls,
             "policy_gate_count": self.policy_gate_count,
+            "actionable_policy_gate_count": self.actionable_policy_gate_count,
             "unsupported_shell_syntax_count": self.unsupported_shell_syntax_count,
             "tool_argument_protocol_retry_count": self.tool_argument_protocol_retry_count,
             "last_tool_summary": self.last_tool_summary,
@@ -246,7 +280,11 @@ def _unsupported_argument(value: Any) -> dict[str, str]:
 
 def _is_verification_command(command: str) -> bool:
     lowered = command.lower()
-    return "pytest" in lowered or "task_service.cli" in lowered or "validate" in lowered
+    return ("pytest" in lowered and not _is_pytest_collection_only(lowered)) or "task_service.cli" in lowered or "validate" in lowered
+
+
+def _is_pytest_collection_only(command: str) -> bool:
+    return "--collect-only" in command or bool(re.search(r"(^|\s)--co(\s|$)", command))
 
 
 def _safe_excerpt(output: str, *, workspace: object | None = None, artifact_path: str = "", limit: int = 4000) -> str:

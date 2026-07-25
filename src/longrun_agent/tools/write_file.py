@@ -23,6 +23,12 @@ def sha256_text(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def _is_destructive_truncation(before: str, after: str) -> bool:
+    before_size = len(before.encode("utf-8"))
+    after_size = len(after.encode("utf-8"))
+    return before_size >= 512 and after_size < 128 and after_size * 5 < before_size
+
+
 class WriteFileTool(BaseTool):
     name = "write_file"
     description = "Write a complete UTF-8 file inside the workspace using an atomic replace."
@@ -47,6 +53,27 @@ class WriteFileTool(BaseTool):
             after = arguments.content
             rel = relative_to_workspace(context.workspace, path)
             code_epoch = int(getattr(context, "code_epoch", 0))
+            if not created and _is_destructive_truncation(before, after):
+                return ToolResult(
+                    tool_call_id=call_id,
+                    tool_name=self.name,
+                    success=False,
+                    summary=f"write_file blocked destructive truncation: {rel}",
+                    output=(
+                        f"Refusing to replace {rel} with {len(after.encode('utf-8'))} bytes because the existing file has "
+                        f"{len(before.encode('utf-8'))} bytes. write_file replaces the complete file; provide the full "
+                        "implementation instead of a note, placeholder, or partial fragment."
+                    ),
+                    error_type=ErrorType.POLICY_GATE,
+                    error_message="complete-file write would destructively truncate an existing file",
+                    metadata={
+                        "path": rel,
+                        "status": "blocked_destructive_truncation",
+                        "size_before": len(before.encode("utf-8")),
+                        "size_after": len(after.encode("utf-8")),
+                        "atomic": True,
+                    },
+                )
             if before == after and not created:
                 return ToolResult(
                     tool_call_id=call_id,

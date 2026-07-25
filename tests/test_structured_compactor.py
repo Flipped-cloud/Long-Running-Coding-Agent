@@ -8,6 +8,7 @@ from longrun_agent.context.schema import EvidenceReference, HandoffRecord, TaskC
 from longrun_agent.context.token_counter import build_token_counter
 from longrun_agent.model.fake import FakeModelProvider
 from longrun_agent.protocol import ModelResponse, ToolCall, ToolResult
+from longrun_agent.state.store import ProjectStateStore
 
 
 def seed() -> TaskContextSeed:
@@ -99,8 +100,55 @@ def test_model_compactor_accepts_native_tool_handoff(tmp_path: Path):
         plan_version=1,
     )
 
-    assert compacted.handoff_id == "h-model"
+    assert compacted.handoff_id.startswith("ctx-")
+    assert compacted.handoff_id != "h-model"
+    assert compacted.generator == "model"
     assert compactor.fallback_count == 0
+
+
+def test_model_compactor_replaces_repeated_model_envelope_fields(tmp_path: Path):
+    record = HandoffRecord(
+        handoff_id="repeated-model-id",
+        project_id="p1",
+        task_id="t1",
+        session_id="s1",
+        source_segment_id=1,
+        target_segment_id=2,
+        plan_version=0,
+        task_objective="stale objective",
+    )
+    response = ModelResponse(tool_calls=[ToolCall(id="h", name="submit_context_handoff", arguments=record.model_dump(mode="json"))])
+    cfg = AppConfig(model=ModelConfig(provider="fake", model_name="fake"), workspace=WorkspaceConfig(root=tmp_path))
+    compactor = StructuredContextCompactor(cfg.context, FakeModelProvider([response, response]))
+
+    first = compactor.compact(
+        seed=seed(),
+        buffer=buffer_with_write(),
+        project_id="p1",
+        session_id="s1",
+        source_segment_id=2,
+        target_segment_id=3,
+        plan_version=1,
+    )
+    second = compactor.compact(
+        seed=seed(),
+        buffer=buffer_with_write(),
+        project_id="p1",
+        session_id="s1",
+        source_segment_id=3,
+        target_segment_id=4,
+        plan_version=1,
+    )
+
+    assert first.handoff_id != second.handoff_id
+    assert (first.source_segment_id, first.target_segment_id) == (2, 3)
+    assert (second.source_segment_id, second.target_segment_id) == (3, 4)
+    assert first.task_objective == seed().task_objective
+    assert first.acceptance_criteria == seed().acceptance_criteria
+    store = ProjectStateStore(tmp_path / "state", workspace_root=tmp_path / "workspace")
+    store.save_handoff(first)
+    store.save_handoff(second)
+    assert len(list(store.handoffs_dir("p1").glob("*.json"))) == 2
 
 
 def test_model_compactor_protocol_failure_falls_back(tmp_path: Path):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -82,7 +83,11 @@ class StructuredContextCompactor:
         messages = [
             {
                 "role": "system",
-                "content": "Create a structured context handoff using only provided evidence. Do not declare the task complete.",
+                "content": (
+                    "Create a structured context handoff using only provided evidence. Do not declare the task complete. "
+                    "Next actions must advance the workspace: when evidence already identifies a failing behavior and target file, "
+                    "the first next action must edit that file rather than reread files or rerun unchanged tests."
+                ),
             },
             {
                 "role": "user",
@@ -118,5 +123,18 @@ class StructuredContextCompactor:
                 self.protocol_error_count += 1
                 messages.append({"role": "user", "content": "Validation error: task_id and session_id must match the current session."})
                 continue
-            return record
+            return record.model_copy(
+                update={
+                    "handoff_id": f"ctx-{uuid.uuid4()}",
+                    "project_id": project_id,
+                    "task_id": seed.task_id,
+                    "session_id": session_id,
+                    "source_segment_id": source_segment_id,
+                    "target_segment_id": target_segment_id,
+                    "plan_version": plan_version,
+                    "task_objective": seed.task_objective,
+                    "acceptance_criteria": list(seed.acceptance_criteria),
+                    "generator": "model",
+                }
+            )
         return None

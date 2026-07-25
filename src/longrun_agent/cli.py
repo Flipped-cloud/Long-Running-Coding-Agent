@@ -183,12 +183,81 @@ def project_resume(
     project_id: str = typer.Option(...),
     scripted_responses: Path | None = typer.Option(None, exists=True, file_okay=True, dir_okay=False),
 ) -> None:
-    app_config = load_config(config)
+    app_config = _load_project_resume_config(config, project_id)
     outcome = ProjectOrchestrator(app_config, _provider(app_config, scripted_responses)).resume(project_id)
     console.print(f"project_id: {outcome.project_id}")
     console.print(f"status: {outcome.status}")
     console.print(f"state_path: {outcome.state_path}")
     raise typer.Exit(code=0 if outcome.status in {"candidate_complete", "verified"} else 1)
+
+
+def _load_project_resume_config(config_path: Path, project_id: str):
+    app_config = load_config(
+        config_path,
+        allow_missing_env={"LONGRUN_WORKSPACE", "LONGRUN_PLAN_FILE"},
+    )
+    bootstrap_store = ProjectStateStore(app_config.state.root)
+    state = bootstrap_store.load(project_id)
+    runtime_paths_migrated = state.workspace_root is None
+    workspace = Path(state.workspace_root).resolve() if state.workspace_root else None
+    plan_file = Path(state.initial_plan_file).resolve() if state.initial_plan_file else None
+
+    if workspace is None or plan_file is None:
+        legacy_workspace, legacy_plan_file = _legacy_project_runtime_paths(app_config, state)
+        workspace = workspace or legacy_workspace
+        plan_file = plan_file or legacy_plan_file
+
+    if workspace is None or not workspace.is_dir():
+        raise ConfigurationError(
+            f"cannot recover the original workspace for project {project_id}; set LONGRUN_WORKSPACE to the existing project workspace"
+        )
+
+    app_config.workspace.root = workspace
+    state.workspace_root = str(workspace)
+    if plan_file is not None and plan_file.is_file():
+        app_config.planning.initial_plan.plan_file = plan_file
+        state.initial_plan_file = str(plan_file)
+    if runtime_paths_migrated:
+        correction = (
+            f"Runtime path recovery: resume restored the original workspace at {workspace}. "
+            "Ignore file-not-found or repository-layout observations from Sessions that used a different workspace. "
+            "Continue from the files and tests in this restored workspace."
+        )
+        for task in state.tasks:
+            if task.status.value in {"ready", "in_progress", "failed", "reopened"}:
+                task.progress_notes.append(correction)
+                task.last_handoff_summary = correction
+                task.consecutive_no_progress_sessions = 0
+    bootstrap_store.save(state)
+    return app_config
+
+
+def _legacy_project_runtime_paths(app_config, state: ProjectState) -> tuple[Path | None, Path | None]:
+    session_ids = [session_id for task in state.tasks for session_id in task.session_ids]
+    if not session_ids:
+        session_ids = [f"{state.project_id}-s1"]
+    for session_id in session_ids:
+        events_path = app_config.telemetry.run_root / session_id / "events.jsonl"
+        try:
+            lines = events_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("event_type") != "run_started":
+                continue
+            payload = event.get("payload") or {}
+            sanitized_config = payload.get("config") or {}
+            raw_workspace = payload.get("workspace") or (sanitized_config.get("workspace") or {}).get("root")
+            planning = sanitized_config.get("planning") or {}
+            raw_plan_file = (planning.get("initial_plan") or {}).get("plan_file")
+            workspace = Path(raw_workspace).resolve() if isinstance(raw_workspace, str) and raw_workspace else None
+            plan_file = Path(raw_plan_file).resolve() if isinstance(raw_plan_file, str) and raw_plan_file else None
+            return workspace, plan_file
+    return None, None
 
 
 def _store(config_path: Path) -> tuple[ProjectStateStore, object]:

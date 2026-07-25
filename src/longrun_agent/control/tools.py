@@ -44,7 +44,7 @@ class ReportProgressArgs(BaseModel):
 
 class ReportProgressTool(BaseTool):
     name = "report_progress"
-    description = "Report progress on the active task without changing task state."
+    description = "Record a resumable progress handoff without completing or blocking the active task."
     args_model = ReportProgressArgs
 
     def execute(self, call_id: str, arguments: ReportProgressArgs, context: ToolContext) -> ToolResult:
@@ -52,7 +52,16 @@ class ReportProgressTool(BaseTool):
             _channel(context).record(
                 ControlSignal(type=ControlSignalType.PROGRESS, summary=arguments.summary, files_touched=arguments.files_touched)
             )
-            return _success(call_id, self.name, "progress recorded")
+            return ToolResult(
+                tool_call_id=call_id,
+                tool_name=self.name,
+                success=True,
+                summary="progress recorded",
+                output=(
+                    "Progress recorded without changing task state. Continue implementation when model turns remain; "
+                    "use request_task_completion only after the acceptance criteria are verified."
+                ),
+            )
         except ValueError as exc:
             return _failure(call_id, self.name, exc)
 
@@ -61,15 +70,33 @@ class ReportBlockerArgs(BaseModel):
     reason: str = Field(min_length=1)
     attempted_actions: list[str] = Field(default_factory=list)
     decomposition_recommended: bool = False
+    external: bool = False
 
 
 class ReportBlockerTool(BaseTool):
     name = "report_blocker"
-    description = "Report that the active task is blocked."
+    description = (
+        "Report an external or infrastructure blocker that cannot be fixed by editing or testing inside the workspace. "
+        "For unfinished code work, use report_progress so the next Session can continue."
+    )
     args_model = ReportBlockerArgs
 
     def execute(self, call_id: str, arguments: ReportBlockerArgs, context: ToolContext) -> ToolResult:
         try:
+            if not arguments.external and not arguments.decomposition_recommended:
+                return ToolResult(
+                    tool_call_id=call_id,
+                    tool_name=self.name,
+                    success=False,
+                    summary="report_blocker rejected: remaining workspace work is resumable",
+                    output=(
+                        "Code defects, failing tests, remaining edits, and Session step/time limits are not Project blockers. "
+                        "Call report_progress with a concise handoff and let the next Session continue. Set external=true only "
+                        "for a missing permission, dependency, service, or infrastructure condition outside the workspace."
+                    ),
+                    error_type=ErrorType.POLICY_GATE,
+                    error_message="resumable workspace work cannot block the project",
+                )
             _channel(context).record(
                 ControlSignal(
                     type=ControlSignalType.BLOCKER,

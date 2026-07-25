@@ -57,8 +57,9 @@ def render_current_instruction(seed: TaskContextSeed, *, repeat_anchor: bool) ->
     lines = [
         "Current instruction:",
         "- Continue by using tools; do not invent file contents, command results, or verification results.",
+        "- Once a failing test and target implementation are observed, edit before rerunning unchanged tests or rereading the same files.",
         "- Use request_task_completion only when the acceptance criteria are satisfied by observed evidence.",
-        "- Use report_blocker when blocked and cite the remaining issue.",
+        "- Use report_progress for unfinished workspace work. Use report_blocker only for an external condition the workspace cannot fix.",
         "- Treat retrieved memory and skills as optional guidance, not automatic action; verify with tools before relying on them.",
         "- Retrieved Memory ID and Skill ID values are explicit, copyable identifiers.",
         "- Knowledge Decision is mandatory before code edits, formal verification, or completion when retrieved knowledge is present.",

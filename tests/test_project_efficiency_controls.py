@@ -61,7 +61,7 @@ def test_project_terminal_blocker_stops_without_followup_model_call(tmp_path: Pa
                     ToolCall(
                         id="b1",
                         name="report_blocker",
-                        arguments={"reason": "blocked", "attempted_actions": [], "decomposition_recommended": False},
+                        arguments={"reason": "blocked", "attempted_actions": [], "decomposition_recommended": False, "external": True},
                     )
                 ]
             ),
@@ -71,6 +71,42 @@ def test_project_terminal_blocker_stops_without_followup_model_call(tmp_path: Pa
     outcome = ProjectOrchestrator(cfg, provider, project_id="stop-blocker").start("ship")
     assert provider.calls == 2
     assert outcome.status == ProjectStatus.BLOCKED.value
+
+
+def test_final_turn_progress_handoff_continues_next_session(tmp_path: Path):
+    cfg = config(tmp_path, mode="static", max_sessions=2)
+    cfg.agent.max_steps = 1
+    provider = FakeModelProvider(
+        [
+            submit_plan(),
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="p1",
+                        name="report_progress",
+                        arguments={"summary": "cli.py still needs editing", "files_touched": []},
+                    )
+                ]
+            ),
+            completion("c1"),
+        ]
+    )
+
+    outcome = ProjectOrchestrator(cfg, provider, project_id="progress-handoff").start("ship")
+
+    store = ProjectStateStore(cfg.state.root, workspace_root=cfg.workspace.root)
+    state = store.load("progress-handoff")
+    sessions = store.read_sessions("progress-handoff")
+    assert outcome.status == ProjectStatus.SESSION_LIMIT_REACHED.value
+    assert state.status == ProjectStatus.SESSION_LIMIT_REACHED
+    assert len(sessions) == 2
+    assert sessions[0]["terminal_signal"] is None
+    assert "report_progress" in sessions[0]["handoff_summary"]
+    assert "report_blocker" not in sessions[0]["handoff_summary"]
+    task = state.task_by_id("progress-handoff:T1")
+    assert task.status == TaskStatus.CANDIDATE_COMPLETE
+    assert task.blocker is None
+    assert "cli.py still needs editing" in task.progress_notes
 
 
 def test_project_final_answer_without_terminal_requests_control_tool(tmp_path: Path):
@@ -155,20 +191,30 @@ class ProtocolThenResponseProvider(ModelProvider):
 def test_read_only_streak_inserts_action_required(tmp_path: Path):
     cfg = config(tmp_path, mode="static", max_sessions=1)
     cfg.planning.initial_plan.min_tasks = 1
-    cfg.agent.max_steps = 5
-    for name in ["a.py", "b.py", "c.py"]:
+    cfg.agent.max_steps = 10
+    filenames = [f"{letter}.py" for letter in "abcdefgh"]
+    for name in filenames:
         (cfg.workspace.root / name).write_text("VALUE = 1\n", encoding="utf-8")
     provider = CapturingProvider(
         [
             one_task_plan(),
-            ModelResponse(tool_calls=[ToolCall(id="r1", name="read_file", arguments={"path": "a.py"})]),
-            ModelResponse(tool_calls=[ToolCall(id="r2", name="read_file", arguments={"path": "b.py"})]),
-            ModelResponse(tool_calls=[ToolCall(id="r3", name="read_file", arguments={"path": "c.py"})]),
+            *[
+                ModelResponse(tool_calls=[ToolCall(id=f"r{index}", name="read_file", arguments={"path": name})])
+                for index, name in enumerate(filenames, start=1)
+            ],
             completion("c1"),
         ]
     )
     ProjectOrchestrator(cfg, provider, project_id="read-streak").start("ship")
+    tools_after_three_reads = {tool["function"]["name"] for tool in provider.tools_seen[4]}
+    assert "read_file" in tools_after_three_reads
+    assert "bash" in tools_after_three_reads
     assert any("action_required:" in item.get("content", "") for item in provider.messages[-1] if item["role"] == "user")
+    action_tool_names = {tool["function"]["name"] for tool in provider.tools_seen[-1]}
+    assert "write_file" in action_tool_names
+    assert "request_task_completion" in action_tool_names
+    assert "read_file" not in action_tool_names
+    assert "bash" not in action_tool_names
 
 
 def test_repeated_read_file_is_suppressed(tmp_path: Path):
@@ -243,7 +289,7 @@ def test_terminal_grace_turn_recovers_completion_after_verified_work(tmp_path: P
     assert session["terminal_grace_turn_count"] == 1
     assert session["terminal_signal_recovered"] is True
     assert session["steps"] == 2
-    assert grace_tool_names == {"report_blocker", "request_task_completion"}
+    assert grace_tool_names == {"report_blocker", "report_progress", "request_task_completion"}
     assert "terminal_grace_turn_started" in events
     assert "terminal_signal_recovered" in events
     assert "completion_candidate_created" in events
@@ -415,7 +461,12 @@ def test_auto_completion_not_created_when_blocker_reported(tmp_path: Path):
                     ToolCall(
                         id="block",
                         name="report_blocker",
-                        arguments={"reason": "remaining issue", "attempted_actions": ["pytest"], "decomposition_recommended": False},
+                        arguments={
+                            "reason": "remaining issue",
+                            "attempted_actions": ["pytest"],
+                            "decomposition_recommended": False,
+                            "external": True,
+                        },
                     )
                 ]
             ),
@@ -452,5 +503,7 @@ def test_handoff_is_action_oriented_without_completion_candidate(tmp_path: Path)
     assert session["run_status"] == RunStatus.MAX_STEPS_REACHED.value
     assert "Completed work:" in handoff
     assert "Next required action:" in handoff
-    assert "Do not repeat:" in handoff
+    assert "Context boundary:" in handoff
+    assert "re-read files needed for correctness" in handoff
+    assert "Do not repeat:" not in handoff
     assert "Commands:" not in handoff

@@ -1,0 +1,152 @@
+model:
+  provider: openai_compatible
+  model_name: "${MODEL_NAME}"
+  base_url: "${OPENAI_BASE_URL}"
+  api_key_env: OPENAI_API_KEY
+  temperature: 0.0
+  max_output_tokens: 4096
+  request_timeout_seconds: 180
+  max_api_retries: 3
+
+agent:
+  max_steps: 24
+  max_session_seconds: 300
+  max_consecutive_errors: 5
+  terminal_grace_turns: 1
+  protocol_retries_per_step: 2
+
+workspace:
+  root: "${LONGRUN_WORKSPACE}"
+
+tools:
+  read_file:
+    max_lines: 240
+    max_chars: 30000
+  write_file:
+    max_chars: 200000
+    save_diff: true
+  bash:
+    timeout_seconds: 180
+    max_output_chars: 30000
+    shell: false
+
+telemetry:
+  run_root: ../.runs/long_horizon_real_api/telemetry
+  save_prompts: true
+  save_full_tool_outputs: true
+
+planning:
+  mode: static
+  initial_plan:
+    source: file
+    plan_file: "${LONGRUN_PLAN_FILE}"
+    min_tasks: 15
+    max_tasks: 15
+    max_protocol_retries: 2
+  execution:
+    max_project_sessions: 88
+    attempts_before_decomposition: 1
+    max_project_seconds: 3600
+    max_sessions_per_task: 32
+    max_no_progress_sessions: 12
+    final_verification_command:
+      - python
+      - -m
+      - pytest
+      - -q
+    final_verification_timeout_seconds: 180
+  decomposition:
+    max_depth: 3
+    min_children: 2
+    max_children: 4
+    max_protocol_retries: 2
+  bounded_search:
+    enabled: false
+    candidate_count: 2
+    max_protocol_retries: 2
+
+state:
+  root: ../.runs/long_horizon_real_api/projects
+  atomic_write: true
+
+context:
+  mode: structured_reset
+  model_context_limit: 16384
+  reserve_output_tokens: 2048
+  safety_margin_tokens: 512
+  trigger_ratio: 0.82
+  hard_stop_ratio: 0.96
+  recent_full_turns: 6
+  repeat_task_anchor_at_end: true
+  token_counter:
+    type: approximate
+    chars_per_token: 4.0
+    per_message_overhead: 4
+    per_tool_overhead: 32
+  pruning:
+    clear_stale_reads: true
+    supersede_repeated_bash: true
+    invalidate_tests_after_write: true
+    deduplicate_reminders: true
+    compact_old_tool_results: true
+    compact_output_max_chars: 1200
+  structured_handoff:
+    enabled: true
+    use_model: true
+    max_protocol_retries: 2
+    fallback_deterministic: true
+    max_confirmed_progress: 20
+    max_hypotheses: 5
+    max_next_actions: 5
+
+knowledge:
+  mode: memory_skill
+  root: ../.runs/long_horizon_real_api/knowledge
+  strict_errors: true
+  record_mutation_policy: read_write
+  episode:
+    save_all_sessions: true
+    max_evidence_items: 40
+  reflection:
+    enabled: true
+    trigger_on_blocked: true
+    trigger_on_no_progress: true
+    trigger_on_failed: true
+    trigger_on_decomposition: true
+    trigger_on_provider_error: true
+    trigger_on_context_reset: true
+    max_protocol_retries: 2
+    minimum_evidence_items: 1
+    minimum_confidence: 0.65
+  memory:
+    max_active_records: 500
+    max_retrieved: 3
+    max_context_tokens: 1200
+    minimum_retrieval_score: 0.30
+    default_scope: repository
+  skill:
+    enabled: true
+    max_retrieved: 2
+    max_context_tokens: 1200
+    promotion_min_successes: 2
+    promotion_min_distinct_tasks: 2
+    promotion_min_distinct_repositories: 1
+    minimum_candidate_confidence: 0.65
+    require_active_helpful_source_for_candidate: false
+    allow_code_template: false
+    auto_execute: false
+
+verification:
+  mode: legacy_command
+  execution:
+    isolation: copy
+    timeout_seconds: 180
+    max_parallel_checks: 1
+    preserve_failed_snapshot: true
+    max_output_chars: 30000
+  generated_tests:
+    enabled: false
+
+evaluation:
+  enabled: false
+  root: ../.runs/long_horizon_real_api/evaluation

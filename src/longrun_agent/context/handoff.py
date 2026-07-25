@@ -107,7 +107,14 @@ def deterministic_handoff(
         confirmed_progress=confirmed,
         files_current=sorted(files.values(), key=lambda item: item.path),
         verifications=verifications[-5:],
-        next_actions=[NextAction(action="Continue the current task from the preserved handoff and verify after any further write.")],
+        next_actions=[
+            NextAction(
+                action=(
+                    "Continue from preserved evidence. If the failure and target file are already identified, edit before "
+                    "rereading or rerunning unchanged tests, then verify the write."
+                )
+            )
+        ],
         evidence_references=evidence,
         stale_items_excluded=stale_steps,
         source_steps=source_steps,

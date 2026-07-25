@@ -32,6 +32,18 @@ def test_write_file_update(tmp_path: Path):
     assert result.metadata["before_hash"] != result.metadata["after_hash"]
 
 
+def test_write_file_blocks_destructive_truncation(tmp_path: Path):
+    target = tmp_path / "service.py"
+    original = "\n".join(f"def function_{index}(): return {index}" for index in range(40)) + "\n"
+    target.write_text(original, encoding="utf-8")
+
+    result = execute(tmp_path, {"path": "service.py", "content": "# continue later\n"})
+
+    assert not result.success
+    assert result.metadata["status"] == "blocked_destructive_truncation"
+    assert target.read_text(encoding="utf-8") == original
+
+
 def test_write_file_atomic_metadata(tmp_path: Path):
     result = execute(tmp_path, {"path": "a.txt", "content": ""})
     assert result.success
