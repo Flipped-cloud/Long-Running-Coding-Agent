@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -55,7 +56,7 @@ class LocalProjectAdapter:
     def reset(self, case: EvaluationTaskCase, descriptor: TrialDescriptor) -> None:
         script = self.workspace(case, descriptor) / "reset_repo.py"
         if script.exists():
-            subprocess.run([_python(), str(script)], cwd=script.parent, shell=False, check=True)
+            subprocess.run([sys.executable, str(script)], cwd=script.parent, shell=False, check=True)
         OfflineOracleEvaluator().prepare_baseline(
             case=case,
             descriptor=descriptor,
@@ -280,9 +281,3 @@ def _oracle_progress(verification: AdapterVerificationResult, *, project_session
         score=score,
         source_report_id=verification.oracle_report_id,
     )
-
-
-def _python() -> str:
-    import sys
-
-    return sys.executable

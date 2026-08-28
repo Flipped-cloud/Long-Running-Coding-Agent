@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from longrun_agent.evaluation import reporting
 from longrun_agent.evaluation.reporting import (
     append_trial_attempt,
     normalize_trial_result_store,
@@ -138,7 +137,7 @@ def test_upsert_uses_temporary_file_and_os_replace(tmp_path: Path, monkeypatch) 
         calls.append((Path(source), Path(destination)))
         real_replace(source, destination)
 
-    monkeypatch.setattr(reporting.os, "replace", replace)
+    monkeypatch.setattr("longrun_agent.filesystem.os.replace", replace)
     upsert_trial_result(path, _result("trial-a", TrialStatus.COMPLETED))
 
     assert len(calls) == 1

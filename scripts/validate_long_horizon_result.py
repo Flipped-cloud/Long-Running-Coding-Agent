@@ -19,7 +19,7 @@ SKIP_MARKERS = (
 LEAK_MARKERS = (
     "LONG_HORIZON_PRIVATE_ORACLE_V1",
     "test_hidden_workflow.py",
-    "evals/long_horizon/hidden_tests",
+    "evals/long_horizon/hidden_assets/hidden_tests",
 )
 
 

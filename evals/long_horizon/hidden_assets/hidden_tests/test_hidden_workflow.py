@@ -1,3 +1,5 @@
+"""Private integration oracle injected only into isolated verification copies."""
+
 from __future__ import annotations
 
 import json

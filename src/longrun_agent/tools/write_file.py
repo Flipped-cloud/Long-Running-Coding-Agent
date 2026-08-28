@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import difflib
 import hashlib
-import os
 import tempfile
 
 from pydantic import BaseModel, Field
 
 from longrun_agent.exceptions import WorkspaceSecurityError
+from longrun_agent.filesystem import atomic_replace
 from longrun_agent.protocol import ErrorType, ToolResult
 from longrun_agent.tools.base import BaseTool, ToolContext
 from longrun_agent.tools.path_guard import relative_to_workspace
@@ -103,7 +103,7 @@ class WriteFileTool(BaseTool):
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False, newline="") as handle:
                 handle.write(after)
                 temp_name = handle.name
-            os.replace(temp_name, path)
+            atomic_replace(temp_name, path)
 
             diff = "".join(
                 difflib.unified_diff(

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
 
 from longrun_agent.exceptions import ConfigurationError, StateStoreError
+from longrun_agent.filesystem import atomic_replace
 from longrun_agent.verification.schema import TestCandidate, VerificationContract, VerificationPurpose, VerificationReport
 
 
@@ -161,4 +161,4 @@ class VerificationStore:
             return
         temporary = path.with_suffix(path.suffix + ".tmp")
         temporary.write_text(payload, encoding="utf-8")
-        os.replace(temporary, path)
+        atomic_replace(temporary, path)

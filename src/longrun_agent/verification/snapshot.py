@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shutil
 import stat
 import subprocess
@@ -11,6 +10,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 from longrun_agent.exceptions import ConfigurationError
+from longrun_agent.filesystem import atomic_replace
 from longrun_agent.verification.schema import FileManifestEntry, WorkspaceManifest
 
 DEFAULT_EXCLUDES = {".git", ".runs", "__pycache__", ".pytest_cache", ".ruff_cache", "build", "dist"}
@@ -153,7 +153,7 @@ class GitWorktreeSnapshotProvider(CopySnapshotProvider):
             ),
             encoding="utf-8",
         )
-        os.replace(temporary, state_path)
+        atomic_replace(temporary, state_path)
         return manifest
 
     def _git(self, arguments: list[str], label: str) -> str:

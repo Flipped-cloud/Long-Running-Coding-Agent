@@ -15,6 +15,7 @@ from longrun_agent.knowledge.schema import (
 from longrun_agent.knowledge.skill_lifecycle import SkillCandidateGenerator, SkillLifecycleManager
 from longrun_agent.knowledge.store import KnowledgeStore
 from longrun_agent.model.base import ModelProvider
+from longrun_agent.sequences import dedupe_preserving_order
 
 
 class KnowledgeMutationPolicy(StrEnum):
@@ -57,8 +58,8 @@ class KnowledgeConsolidator:
         before_memory_ids = {memory.memory_id for memory in self.store.list_memories()}
         before_skill_ids = {skill.skill_id for skill in self.store.list_skills()}
         skipped_reasons: list[str] = []
-        referenced_memory_ids = _dedupe(outcome.referenced_memory_ids)
-        referenced_skill_ids = _dedupe(outcome.referenced_skill_ids)
+        referenced_memory_ids = dedupe_preserving_order(outcome.referenced_memory_ids)
+        referenced_skill_ids = dedupe_preserving_order(outcome.referenced_skill_ids)
 
         self._step(outcome, "persist_usage_attribution")
         for memory_id in referenced_memory_ids:
@@ -189,7 +190,7 @@ class KnowledgeConsolidator:
             created_memory_ids=created_memory_ids,
             created_skill_ids=created_skill_ids,
             reused_skill_ids=sorted(set(reused_skill_ids)),
-            skipped_reasons=_dedupe(skipped_reasons),
+            skipped_reasons=dedupe_preserving_order(skipped_reasons),
         )
         self.store.append_event(
             "knowledge_consolidation_completed",
@@ -277,7 +278,3 @@ class KnowledgeConsolidator:
             session_id=outcome.session_id,
             step=step,
         )
-
-
-def _dedupe(values: list[str]) -> list[str]:
-    return list(dict.fromkeys(value for value in values if value))

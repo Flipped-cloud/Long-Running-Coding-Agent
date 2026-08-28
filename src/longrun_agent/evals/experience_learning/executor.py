@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -38,7 +39,7 @@ def run_case(
     workspace = _prepare_case_workspace(case.repository, repeat_root / "workspaces" / case.case_id)
     working_case = case.model_copy(update={"repository": workspace})
     started = time.monotonic()
-    reset = subprocess.run([_python(), str(working_case.reset_script)], cwd=workspace, check=False, capture_output=True, text=True)
+    reset = subprocess.run([sys.executable, str(working_case.reset_script)], cwd=workspace, check=False, capture_output=True, text=True)
     initial = _verify(workspace, verification)
     if initial.passed != case.initial_verification_should_pass:
         raise AssertionError(f"{case.case_id} initial verification expected {case.initial_verification_should_pass}, got {initial.passed}")
@@ -207,12 +208,6 @@ def _sanitize_preflight_stream(value: str, workspace: Path) -> str:
     if any(marker in lowered for marker in ("api_key", "apikey", "token", "secret", "password", "authorization", "bearer ")):
         return "[redacted secret-bearing output]"
     return text
-
-
-def _python() -> str:
-    import sys
-
-    return sys.executable
 
 
 def _prepare_case_workspace(template: Path, workspace: Path) -> Path:

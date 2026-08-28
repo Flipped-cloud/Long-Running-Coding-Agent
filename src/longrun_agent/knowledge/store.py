@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
 
 from longrun_agent.exceptions import ConfigurationError, KnowledgeMutationViolation
+from longrun_agent.filesystem import atomic_replace
 from longrun_agent.knowledge.schema import (
     ExperienceEvidencePack,
     KnowledgeConflictRecord,
@@ -359,7 +359,7 @@ class KnowledgeStore:
         if self.atomic_write:
             tmp = path.with_suffix(path.suffix + ".tmp")
             tmp.write_text(text, encoding="utf-8")
-            os.replace(tmp, path)
+            atomic_replace(tmp, path)
         else:
             path.write_text(text, encoding="utf-8")
 

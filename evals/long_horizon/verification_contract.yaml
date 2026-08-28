@@ -1,0 +1,44 @@
+contract_id: long-horizon-workflow-service
+contract_version: 1
+project_id: __PROJECT_ID__
+scope: project
+source: file
+hidden_assets_root: hidden_assets
+checks:
+  - check_id: public-workflow-suite
+    title: Public workflow regression and requirements
+    kind: resolution
+    visibility: public
+    argv: [python, -m, pytest, -q, tests]
+    cwd: .
+    timeout_seconds: 180
+    required: true
+  - check_id: hidden-workflow-oracle
+    title: Private workflow integration oracle
+    kind: resolution
+    visibility: hidden
+    argv: [python, -m, pytest, -q, hidden_tests]
+    cwd: .
+    timeout_seconds: 180
+    required: true
+integrity_rules:
+  protected_paths: [tests/*.py, pyproject.toml, TASK.md]
+  trusted_test_patterns: [tests/*.py]
+  allowed_change_patterns: [workflow_service/*.py, README.md]
+  required_artifacts:
+    - workflow_service/models.py
+    - workflow_service/serialization.py
+    - workflow_service/storage.py
+    - workflow_service/graph.py
+    - workflow_service/retry.py
+    - workflow_service/audit.py
+    - workflow_service/metrics.py
+    - workflow_service/service.py
+    - workflow_service/cli.py
+  hidden_asset_markers: [hidden_tests/*]
+  max_deleted_files: 0
+  allow_project_config_changes: false
+generated_test_policy:
+  enabled: false
+  can_be_required: false
+  max_candidates_per_task: 0

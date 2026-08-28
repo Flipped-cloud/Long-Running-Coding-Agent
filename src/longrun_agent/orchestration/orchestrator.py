@@ -28,6 +28,7 @@ from longrun_agent.planning.initial_planner import InitialPlanner
 from longrun_agent.planning.recovery_evaluator import RecoveryCandidateEvaluator
 from longrun_agent.planning.recovery_generator import RecoveryCandidateGenerator
 from longrun_agent.protocol import ErrorType, RunResult, RunStatus, ToolResult
+from longrun_agent.sequences import dedupe_preserving_order
 from longrun_agent.state.aggregation import aggregate_candidate_complete_parents, aggregate_verified_parents, project_statistics
 from longrun_agent.state.schema import CompletionCandidate, PlanRevision, ProjectState, ProjectStatus, TaskNode, TaskStatus, utc_now
 from longrun_agent.state.selector import TaskSelector
@@ -742,8 +743,12 @@ class ProjectOrchestrator:
             ):
                 session_record[field] = 0
 
-            referenced_memory_ids = _dedupe([memory_id for record in knowledge_channel.records for memory_id in record.memory_ids])
-            referenced_skill_ids = _dedupe([skill_id for record in knowledge_channel.records for skill_id in record.skill_ids])
+            referenced_memory_ids = dedupe_preserving_order(
+                [memory_id for record in knowledge_channel.records for memory_id in record.memory_ids]
+            )
+            referenced_skill_ids = dedupe_preserving_order(
+                [skill_id for record in knowledge_channel.records for skill_id in record.skill_ids]
+            )
             if knowledge_channel.decision_recorded and not knowledge_channel.records and knowledge_channel.not_used_reason:
                 self.knowledge_store.append_event(
                     "knowledge_reviewed_not_used",
@@ -883,8 +888,8 @@ class ProjectOrchestrator:
                 plan_version=state.plan_version,
                 payload=signal.model_dump(),
             )
-        task.files_touched = _dedupe([*task.files_touched, *trace.changed_files])
-        task.read_files = _dedupe([*task.read_files, *trace.read_files])
+        task.files_touched = dedupe_preserving_order([*task.files_touched, *trace.changed_files])
+        task.read_files = dedupe_preserving_order([*task.read_files, *trace.read_files])
         substantive_progress_count = sum(bool(signal.files_touched) for signal in channel.progress_signals)
         no_progress = trace.no_progress(
             progress_count=substantive_progress_count,
@@ -1011,9 +1016,9 @@ class ProjectOrchestrator:
             return None
         if channel.generated_test_requirement_error() is not None:
             return None
-        changed_files = _dedupe([*task.files_touched, *trace.changed_files])
+        changed_files = dedupe_preserving_order([*task.files_touched, *trace.changed_files])
         successful_tests = list(trace.successful_test_commands)
-        verification_commands = _dedupe([*trace.successful_acceptance_commands, *successful_tests])
+        verification_commands = dedupe_preserving_order([*trace.successful_acceptance_commands, *successful_tests])
         evidence: list[str] = []
         if changed_files and successful_tests:
             evidence.append("changed_files_and_successful_tests")
@@ -1715,14 +1720,6 @@ class _ChannelRouter(ToolRouter):
         if call.name == "bash" and _is_verification_tool_call(call.arguments):
             return True
         return False
-
-
-def _dedupe(items: list[str]) -> list[str]:
-    deduped: list[str] = []
-    for item in items:
-        if item and item not in deduped:
-            deduped.append(item)
-    return deduped
 
 
 def _is_verification_tool_call(arguments: dict) -> bool:

@@ -15,6 +15,7 @@ from longrun_agent.knowledge.schema import (
     ReflectionCandidate,
 )
 from longrun_agent.knowledge.store import KnowledgeStore
+from longrun_agent.sequences import dedupe_preserving_order
 
 LEAK_PATTERNS = [
     re.compile(r"[A-Za-z]:\\"),
@@ -172,10 +173,10 @@ class MemoryLifecycleManager:
         )
         duplicate = self.store.find_duplicate_memory(record)
         if duplicate is not None:
-            duplicate.source_episode_ids = _dedupe([*duplicate.source_episode_ids, pack.episode_id])
-            duplicate.source_task_ids = _dedupe([*duplicate.source_task_ids, pack.task_id])
-            duplicate.source_session_ids = _dedupe([*duplicate.source_session_ids, pack.session_id])
-            duplicate.evidence_ids = _dedupe([*duplicate.evidence_ids, *record.evidence_ids])
+            duplicate.source_episode_ids = dedupe_preserving_order([*duplicate.source_episode_ids, pack.episode_id])
+            duplicate.source_task_ids = dedupe_preserving_order([*duplicate.source_task_ids, pack.task_id])
+            duplicate.source_session_ids = dedupe_preserving_order([*duplicate.source_session_ids, pack.session_id])
+            duplicate.evidence_ids = dedupe_preserving_order([*duplicate.evidence_ids, *record.evidence_ids])
             duplicate.updated_at = datetime.now(UTC).isoformat()
             self.store.save_memory(duplicate)
             return duplicate
@@ -231,11 +232,3 @@ def _successful_verification_as_failure(candidate: ReflectionCandidate, pack: Ex
 
 def _failure_signal(pack: ExperienceEvidencePack) -> bool:
     return bool(pack.no_progress or pack.blockers or pack.failed_verifications or pack.repeated_actions)
-
-
-def _dedupe(items: list[str]) -> list[str]:
-    result: list[str] = []
-    for item in items:
-        if item and item not in result:
-            result.append(item)
-    return result

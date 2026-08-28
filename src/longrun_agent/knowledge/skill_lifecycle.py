@@ -19,6 +19,7 @@ from longrun_agent.knowledge.schema import (
 )
 from longrun_agent.knowledge.store import KnowledgeStore
 from longrun_agent.model.base import ModelProvider
+from longrun_agent.sequences import dedupe_preserving_order
 
 KNOWN_TOOLS = {"read_file", "write_file", "bash", "report_progress", "report_blocker", "request_task_completion", "request_decomposition"}
 
@@ -277,7 +278,7 @@ class SkillLifecycleManager:
         draft = draft.model_copy(
             update={
                 "source_memory_ids": draft_source_ids,
-                "anti_conditions": _dedupe([*draft.anti_conditions, *source_anti_conditions]),
+                "anti_conditions": dedupe_preserving_order([*draft.anti_conditions, *source_anti_conditions]),
             }
         )
         if draft.scope == MemoryScope.PORTABLE and _draft_contains_source_specific_text(draft):
@@ -315,9 +316,9 @@ class SkillLifecycleManager:
             return None
         duplicate = self._find_duplicate(skill)
         if duplicate is not None:
-            duplicate.source_episode_ids = _dedupe([*duplicate.source_episode_ids, *skill.source_episode_ids])
-            duplicate.source_task_ids = _dedupe([*duplicate.source_task_ids, *skill.source_task_ids])
-            duplicate.evidence_ids = _dedupe([*duplicate.evidence_ids, *skill.evidence_ids])
+            duplicate.source_episode_ids = dedupe_preserving_order([*duplicate.source_episode_ids, *skill.source_episode_ids])
+            duplicate.source_task_ids = dedupe_preserving_order([*duplicate.source_task_ids, *skill.source_task_ids])
+            duplicate.evidence_ids = dedupe_preserving_order([*duplicate.evidence_ids, *skill.evidence_ids])
             duplicate.updated_at = utc_now()
             self.store.save_skill(duplicate)
             self.store.append_event(
@@ -386,7 +387,7 @@ class SkillLifecycleManager:
             except FileNotFoundError:
                 continue
             anti_conditions.extend(memory.anti_conditions)
-        return _dedupe(anti_conditions)
+        return dedupe_preserving_order(anti_conditions)
 
     def _find_duplicate(self, candidate: SkillRecord) -> SkillRecord | None:
         return self.store.find_skill_by_derivation(source_memory_ids=candidate.source_memory_ids)
@@ -629,11 +630,3 @@ def _contains_leak(text: str) -> bool:
     return (
         "api_key" in lowered or "token" in lowered or "secret" in lowered or "password" in lowered or ":\\" in text or text.startswith("/")
     )
-
-
-def _dedupe(items: list[str]) -> list[str]:
-    result: list[str] = []
-    for item in items:
-        if item and item not in result:
-            result.append(item)
-    return result

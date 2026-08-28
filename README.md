@@ -226,6 +226,26 @@ longrun-agent run --config configs/baseline.yaml --task "Fix the implementation 
 
 The runtime reads the API key only from the configured environment variable and does not write it to logs.
 
+## Video Recording Demo
+
+`examples/video_demo_repo` contains a resettable transactional-inventory defect designed for a short real-model demonstration. On Ubuntu, configure `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `MODEL_NAME`, then run:
+
+```bash
+bash scripts/run_video_demo.sh
+```
+
+The script shows the failing baseline, the live model/tool loop, and an independent passing test run. See `examples/video_demo_repo/README.md` for Python-path overrides and retake instructions.
+
+## Long-Horizon Architecture Demo
+
+The complementary `workflow_service` case exercises the higher-level project architecture with a bounded five-task dependency plan, persisted Sessions, structured context handoffs, knowledge lifecycle recording, frozen contract verification, hidden tests, and an independent oracle. It is configured for a 30-55 minute target window with a 60-minute shell watchdog:
+
+```bash
+PROJECT_ID=architecture-bounded-01 bash scripts/run_long_horizon_real_api.sh
+```
+
+See `evals/long_horizon/VIDEO_DEMO.md` for Ubuntu setup, resume instructions, output locations, and an edited-video shot list.
+
 ## Project CLI
 
 Start a planned project:

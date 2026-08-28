@@ -10,13 +10,16 @@ from pathlib import Path
 import pytest
 
 from longrun_agent.config import ConfigurationError, load_config
+from longrun_agent.verification.contract import load_contract
+from longrun_agent.verification.schema import CheckVisibility
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIG = REPO_ROOT / "configs" / "long_horizon_real_api.yaml"
 PLAN = REPO_ROOT / "evals" / "long_horizon" / "plan.json"
 FIXTURE = REPO_ROOT / "examples" / "long_horizon_repo"
 TASK_FILE = REPO_ROOT / "evals" / "long_horizon" / "TASK.md"
-HIDDEN_TESTS = REPO_ROOT / "evals" / "long_horizon" / "hidden_tests"
+HIDDEN_TESTS = REPO_ROOT / "evals" / "long_horizon" / "hidden_assets" / "hidden_tests"
+CONTRACT = REPO_ROOT / "evals" / "long_horizon" / "verification_contract.yaml"
 RUN_SCRIPT = REPO_ROOT / "scripts" / "run_long_horizon_real_api.sh"
 VALIDATOR = REPO_ROOT / "scripts" / "validate_long_horizon_result.py"
 SUMMARIZER = REPO_ROOT / "scripts" / "summarize_long_horizon_run.py"
@@ -53,22 +56,26 @@ def test_long_horizon_config_loads_without_constructing_provider(tmp_path, monke
     assert config.workspace.root == (tmp_path / "workspace").resolve()
     assert config.planning.mode == "static"
     assert config.planning.initial_plan.plan_file == PLAN.resolve()
-    assert config.planning.initial_plan.min_tasks == config.planning.initial_plan.max_tasks == 15
-    assert config.planning.execution.max_project_sessions == 88
-    assert config.planning.execution.max_sessions_per_task == 32
-    assert config.planning.execution.max_no_progress_sessions == 12
-    assert config.planning.execution.max_project_seconds == 3600
-    assert config.agent.max_steps == 24
+    assert config.planning.initial_plan.min_tasks == config.planning.initial_plan.max_tasks == 5
+    assert config.planning.execution.max_project_sessions == 10
+    assert config.planning.execution.max_sessions_per_task == 3
+    assert config.planning.execution.max_no_progress_sessions == 2
+    assert config.planning.execution.max_project_seconds == 3300
+    assert config.agent.max_steps == 14
     assert config.context.mode == "structured_reset"
-    assert config.context.model_context_limit == 16384
-    assert config.context.trigger_ratio == 0.82
-    assert config.context.structured_handoff.use_model
+    assert config.context.model_context_limit == 32768
+    assert config.context.trigger_ratio == 0.86
+    assert not config.context.structured_handoff.use_model
     assert config.context.structured_handoff.fallback_deterministic
     assert config.knowledge.mode == "memory_skill"
     assert config.knowledge.reflection.enabled
     assert config.knowledge.skill.enabled
     assert not config.knowledge.skill.auto_execute
     assert config.state.atomic_write
+    assert config.verification.mode == "contract"
+    assert config.verification.contract.path == CONTRACT.resolve()
+    assert config.verification.execution.isolation == "copy"
+    assert config.verification.policy.require_project_contract
 
 
 def test_long_horizon_config_rejects_missing_runtime_paths(monkeypatch):
@@ -94,7 +101,7 @@ def test_long_horizon_outputs_are_outside_agent_workspace(tmp_path, monkeypatch)
 def test_static_plan_has_expected_unique_dag():
     payload = json.loads(PLAN.read_text(encoding="utf-8"))
     tasks = payload["tasks"]
-    assert len(tasks) == 15
+    assert len(tasks) == 5
     keys = [task["key"] for task in tasks]
     assert len(keys) == len(set(keys))
     assert all(task["objective"].strip() and task["acceptance_criteria"] for task in tasks)
@@ -118,6 +125,16 @@ def test_static_plan_has_expected_unique_dag():
     for key in keys:
         visit(key)
     assert set(by_key["integration-docs"]["depends_on_keys"]) == set(keys) - {"integration-docs"}
+
+
+def test_long_horizon_contract_keeps_hidden_oracle_outside_workspace():
+    contract = load_contract(CONTRACT, workspace_root=FIXTURE)
+    assert contract.scope == "project"
+    assert contract.hidden_assets_root == (CONTRACT.parent / "hidden_assets").resolve()
+    assert contract.hidden_assets_root.is_dir()
+    assert [check.visibility for check in contract.checks] == [CheckVisibility.PUBLIC, CheckVisibility.HIDDEN]
+    assert contract.integrity_rules.allowed_change_patterns == ["workflow_service/*.py", "README.md"]
+    assert contract.integrity_rules.max_deleted_files == 0
 
 
 def write_project_artifacts(root: Path, project_id: str, status: str, *, include_optional: bool) -> tuple[Path, Path]:
@@ -287,6 +304,30 @@ def test_run_script_fails_fast_without_api_environment(tmp_path):
     assert result.returncode == 2
     assert "missing required environment variable" in result.stderr
     assert not (REPO_ROOT / ".runs" / "long_horizon_real_api" / "workspaces" / environment["PROJECT_ID"]).exists()
+
+
+def test_resume_mode_requires_explicit_project_id():
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "MODEL_NAME": "integration-model",
+            "OPENAI_BASE_URL": "https://example.invalid/v1",
+            "OPENAI_API_KEY": "test-only-key",
+            "RESUME_PROJECT": "1",
+        }
+    )
+    environment.pop("PROJECT_ID", None)
+    result = subprocess.run(
+        [bash_executable(), str(RUN_SCRIPT)],
+        cwd=REPO_ROOT,
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "PROJECT_ID is required when RESUME_PROJECT=1" in result.stderr
 
 
 def test_long_horizon_shell_script_has_valid_bash_syntax():

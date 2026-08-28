@@ -1,184 +1,64 @@
 {
-  "project_summary": "Complete and verify a file-backed Python workflow scheduler through dependency-aware, focused tasks.",
+  "project_summary": "Finish the advanced service layer and CLI of a file-backed workflow scheduler, then verify the complete public and private contract.",
   "tasks": [
     {
-      "key": "model-validation",
-      "title": "Harden task data model validation",
-      "objective": "Implement strict Task and TaskStatus validation in workflow_service/models.py while preserving current construction and public imports. Run the focused model tests before completion.",
+      "key": "lifecycle-core",
+      "title": "Complete dependency-aware lifecycle execution",
+      "objective": "Finish WorkflowService run and retry behavior: reject unsatisfied dependencies, persist legal transitions and results, and emit complete audit events. Keep the completed foundation modules intact unless an integration defect requires a narrow change.",
       "acceptance_criteria": [
-        "Task identifiers and names are normalized and strictly validated",
-        "Boolean counters, duplicate dependencies, self-dependencies, and invalid metadata are rejected",
-        "python -m pytest -q tests/test_models.py passes"
+        "Run rejects blocked tasks and persists success or failure deterministically",
+        "Retry enforces attempt limits and emits a task_retried audit event",
+        "Focused lifecycle run and retry tests pass"
       ],
       "depends_on_keys": []
     },
     {
-      "key": "serialization",
-      "title": "Complete deterministic task serialization",
-      "objective": "Complete workflow_service/serialization.py with lossless, strict JSON conversion and explicit malformed payload errors. Limit changes to serialization and directly required model behavior.",
+      "key": "propagation-idempotency",
+      "title": "Add transitive propagation and persistent idempotency",
+      "objective": "Implement failure and cancellation propagation across all transitive dependents, legal terminal-state handling, and persistent create/cancel idempotency that survives WorkflowService reconstruction.",
       "acceptance_criteria": [
-        "All Task fields survive a dict round trip",
-        "Unknown fields, non-object payloads, and non-JSON results are rejected",
-        "Focused serialization tests pass"
+        "Failure and cancellation affect only the complete dependent subgraph and preserve the source reason",
+        "Identical create and cancel replays do not duplicate state or audit events, while conflicting key reuse fails",
+        "Focused propagation and idempotency tests pass"
       ],
-      "depends_on_keys": []
+      "depends_on_keys": ["lifecycle-core"]
     },
     {
-      "key": "audit-log",
-      "title": "Strengthen append-only audit logging",
-      "objective": "Make workflow_service/audit.py safely create parent directories, preserve monotonically increasing sequence numbers across process reopen, and validate stored events.",
+      "key": "cli-execution",
+      "title": "Complete lifecycle CLI commands",
+      "objective": "Wire run, retry, and cancel through WorkflowService, including the run failure simulation contract, JSON success output, and non-zero stderr failures.",
       "acceptance_criteria": [
-        "Audit sequence numbers remain monotonic across AuditLog instances",
-        "Events are valid deterministic JSON lines",
-        "python -m pytest -q tests/test_metrics_audit.py -k audit passes"
+        "run, retry, and cancel execute through WorkflowService",
+        "Successful commands print deterministic JSON and invalid operations return non-zero with clear stderr",
+        "Focused CLI lifecycle tests pass"
       ],
-      "depends_on_keys": []
+      "depends_on_keys": ["lifecycle-core"]
     },
     {
-      "key": "retry-policy",
-      "title": "Implement deterministic retry policy",
-      "objective": "Implement strict capped exponential backoff and retry boundary handling in workflow_service/retry.py without sleeping or adding timing delays.",
+      "key": "cli-data-integration",
+      "title": "Complete CLI data and reporting workflows",
+      "objective": "Wire validated import, canonical export, and metrics into the CLI. Preserve state on invalid imports and create export parent directories.",
       "acceptance_criteria": [
-        "Backoff is base * 2^(attempt-1) capped at the configured maximum",
-        "Invalid attempts including bool are rejected",
-        "python -m pytest -q tests/test_graph_retry.py -k 'backoff or retry_boundary' passes"
-      ],
-      "depends_on_keys": []
-    },
-    {
-      "key": "atomic-storage",
-      "title": "Make JSON storage atomic and strict",
-      "objective": "Update workflow_service/storage.py to create parent directories, atomically replace files from a same-directory temporary file, clean temporary files, validate complete payloads, and write canonical ordering.",
-      "acceptance_criteria": [
-        "Nested storage paths work and saves are atomic",
-        "Duplicate IDs and malformed top-level data are rejected without replacing valid state",
-        "python -m pytest -q tests/test_serialization_storage.py passes"
-      ],
-      "depends_on_keys": ["serialization"]
-    },
-    {
-      "key": "dependency-graph",
-      "title": "Validate dependency DAGs",
-      "objective": "Implement deterministic missing-dependency and cycle validation in workflow_service/graph.py, including actionable cycle paths.",
-      "acceptance_criteria": [
-        "Missing dependencies are rejected",
-        "Direct and transitive cycles are rejected with a cycle path",
-        "python -m pytest -q tests/test_graph_retry.py -k graph passes"
-      ],
-      "depends_on_keys": ["model-validation"]
-    },
-    {
-      "key": "lifecycle",
-      "title": "Enforce legal task lifecycle transitions",
-      "objective": "Update workflow_service/service.py and narrowly related model helpers so run, success, failure, retry, and cancel transitions are legal, persisted, and audited.",
-      "acceptance_criteria": [
-        "Run success and failure persist complete state and audit evidence",
-        "Retry only reopens eligible failed tasks and terminal success remains immutable",
-        "Focused lifecycle tests pass"
-      ],
-      "depends_on_keys": ["model-validation", "atomic-storage", "audit-log"]
-    },
-    {
-      "key": "ready-selection",
-      "title": "Implement deterministic ready-task selection",
-      "objective": "Complete dependency-aware ready selection and service integration. Results must be sorted and exclude blocked or terminal tasks.",
-      "acceptance_criteria": [
-        "Only pending tasks with all dependencies succeeded are ready",
-        "Ready task IDs and dependent IDs are deterministic",
-        "Focused ready-selection tests pass"
-      ],
-      "depends_on_keys": ["dependency-graph", "lifecycle"]
-    },
-    {
-      "key": "failure-cancellation",
-      "title": "Propagate failures and cancellations",
-      "objective": "Implement transitive dependent cancellation for source failures and explicit cancellation, preserving stable reasons and terminal-state rules.",
-      "acceptance_criteria": [
-        "Failure cancels every transitive dependent with the source reason",
-        "Cancellation is transitive and identical repeated cancellation is idempotent",
-        "Focused propagation tests pass"
-      ],
-      "depends_on_keys": ["dependency-graph", "lifecycle"]
-    },
-    {
-      "key": "idempotency",
-      "title": "Add persistent operation idempotency",
-      "objective": "Implement deterministic idempotency for create and state-changing operations without weakening duplicate-ID checks. Persist enough information for behavior to survive service reconstruction.",
-      "acceptance_criteria": [
-        "Identical idempotency-key replay returns the original result without duplicate audit events",
-        "Conflicting key reuse is rejected",
-        "Focused idempotency tests pass"
-      ],
-      "depends_on_keys": ["lifecycle", "atomic-storage"]
-    },
-    {
-      "key": "metrics",
-      "title": "Complete workflow metrics",
-      "objective": "Complete workflow_service/metrics.py for deterministic status, attempt, retry, and terminal statistics with defined empty behavior.",
-      "acceptance_criteria": [
-        "Metrics expose all required counts and terminal rate",
-        "Empty workflow metrics are stable and JSON serializable",
-        "python -m pytest -q tests/test_metrics_audit.py -k metrics passes"
-      ],
-      "depends_on_keys": ["lifecycle"]
-    },
-    {
-      "key": "import-export",
-      "title": "Complete validated JSON import and export",
-      "objective": "Implement canonical import/export in storage and service boundaries. Validate every task and the entire dependency graph before replacing persisted state.",
-      "acceptance_criteria": [
-        "Import/export is a canonical round trip",
-        "Invalid imports leave existing state unchanged",
-        "Focused import/export tests pass"
-      ],
-      "depends_on_keys": ["atomic-storage", "dependency-graph"]
-    },
-    {
-      "key": "cli-core",
-      "title": "Complete create/get/list/run/retry/cancel CLI",
-      "objective": "Complete workflow_service/cli.py command behavior and JSON/error contracts for task creation, queries, execution, retries, and cancellation.",
-      "acceptance_criteria": [
-        "create, get, list, run, retry, and cancel execute through WorkflowService",
-        "Successful commands print JSON and invalid operations return non-zero with stderr",
-        "Focused CLI core tests pass"
-      ],
-      "depends_on_keys": ["ready-selection", "failure-cancellation", "idempotency"]
-    },
-    {
-      "key": "cli-data",
-      "title": "Complete CLI import/export and metrics",
-      "objective": "Wire validated JSON import/export and metrics into the CLI, including parent directory creation for export destinations.",
-      "acceptance_criteria": [
-        "CLI import/export round trip succeeds",
-        "CLI metrics returns the required JSON fields",
+        "CLI import/export round trips canonically and invalid graphs do not replace stored state",
+        "CLI metrics exposes the required deterministic JSON fields",
         "python -m pytest -q tests/test_cli.py passes"
       ],
-      "depends_on_keys": ["import-export", "metrics", "cli-core"]
+      "depends_on_keys": ["propagation-idempotency", "cli-execution"]
     },
     {
       "key": "integration-docs",
-      "title": "Finish integration verification and documentation",
-      "objective": "Run the complete test suite, fix remaining implementation integration defects without modifying tests or configuration, and update README.md with architecture, lifecycle, retry, persistence, and all CLI workflows.",
+      "title": "Verify the whole workflow and document the architecture",
+      "objective": "Run the complete test suite, fix only remaining implementation integration defects, and update README.md with architecture, lifecycle, retry, persistence, audit, metrics, and CLI examples.",
       "acceptance_criteria": [
-        "python -m pytest -q passes with no deleted, skipped, or weakened tests",
-        "README documents storage guarantees, lifecycle, retry, CLI, and import/export",
-        "All preceding core tasks are complete and their behavior integrates in one workflow"
+        "python -m pytest -q passes without deleting, skipping, or weakening tests",
+        "README documents the full design and executable CLI workflow",
+        "All preceding tasks integrate into one dependency-aware workflow"
       ],
       "depends_on_keys": [
-        "model-validation",
-        "serialization",
-        "audit-log",
-        "retry-policy",
-        "atomic-storage",
-        "dependency-graph",
-        "lifecycle",
-        "ready-selection",
-        "failure-cancellation",
-        "idempotency",
-        "metrics",
-        "import-export",
-        "cli-core",
-        "cli-data"
+        "lifecycle-core",
+        "propagation-idempotency",
+        "cli-execution",
+        "cli-data-integration"
       ]
     }
   ]

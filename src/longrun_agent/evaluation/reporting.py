@@ -10,6 +10,7 @@ from typing import Any
 
 from longrun_agent.evaluation.aggregation import aggregate_results
 from longrun_agent.evaluation.schema import TrialAttempt, TrialResult, TrialStatus, latest_trial_results
+from longrun_agent.filesystem import atomic_replace
 from longrun_agent.state.schema import utc_now
 
 
@@ -170,7 +171,7 @@ def _write_trial_results(path: Path, results: list[TrialResult]) -> None:
                 handle.write(result.model_dump_json() + "\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_path, path)
+        atomic_replace(temporary_path, path)
     finally:
         if temporary_path is not None and temporary_path.exists():
             temporary_path.unlink()
@@ -197,7 +198,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_path, path)
+        atomic_replace(temporary_path, path)
     finally:
         if temporary_path is not None and temporary_path.exists():
             temporary_path.unlink()

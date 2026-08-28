@@ -1,8 +1,9 @@
 # Long-Horizon Workflow Service Task
 
-Complete the Python workflow and task scheduling service in this workspace.
-The repository is intentionally incomplete: preserve its existing behavior while
-implementing every requirement below.
+Complete the advanced service and CLI layers of the Python workflow scheduler.
+The model, serialization, atomic storage, graph, retry, audit, and metrics
+foundations are intentionally provided as a tested starting point. Preserve them
+while integrating the remaining behavior below.
 
 ## Scope and constraints
 
@@ -13,8 +14,14 @@ implementing every requirement below.
 - Before completing each plan task, run its focused tests.
 - Before completing the final plan task, run `python -m pytest -q`.
 - Do not report completion solely from inspection; provide executed test evidence.
+- Do not create `.debug`, `.runs`, notes, scratch scripts, or other temporary
+  artifacts inside the workspace. Use `/tmp` for disposable diagnostics.
 
 ## Required behavior
+
+The supplied foundation already provides requirements 1-7; verify rather than
+reimplement it unless a failing integration test proves a narrow correction is
+needed.
 
 1. The `Task` model strictly validates identifiers, names, status, counters,
    dependencies, metadata, and JSON-compatible result values.
@@ -45,4 +52,3 @@ implementing every requirement below.
     before replacing persisted data.
 14. Public and integration tests pass, and README documents storage, lifecycle,
     retry semantics, command examples, and JSON import/export.
-

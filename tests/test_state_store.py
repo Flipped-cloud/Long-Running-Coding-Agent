@@ -34,7 +34,7 @@ def test_state_store_save_failure_keeps_previous_file(tmp_path: Path, monkeypatc
     def fail_replace(src, dst):
         raise OSError("replace failed")
 
-    monkeypatch.setattr("longrun_agent.state.store.os.replace", fail_replace)
+    monkeypatch.setattr("longrun_agent.filesystem.os.replace", fail_replace)
     current.objective = "changed"
     with pytest.raises(OSError):
         store.save(current)
@@ -60,7 +60,7 @@ def test_state_store_retries_transient_permission_error(tmp_path: Path, monkeypa
             raise PermissionError("transient Windows file lock")
         actual_replace(src, dst)
 
-    monkeypatch.setattr("longrun_agent.state.store.os.replace", transient_replace)
+    monkeypatch.setattr("longrun_agent.filesystem.os.replace", transient_replace)
 
     store.create(state())
 
