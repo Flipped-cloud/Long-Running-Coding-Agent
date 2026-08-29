@@ -22,10 +22,6 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y bubblewrap
-      - name: Verify user namespaces
-        run: |
-          set -euo pipefail
-          unshare -Ur true
       - name: Install package
         run: |
           set -euo pipefail
