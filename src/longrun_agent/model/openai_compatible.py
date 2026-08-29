@@ -124,12 +124,13 @@ class OpenAICompatibleProvider(ModelProvider):
                     "message": {"role": "assistant", "content": getattr(message, "content", None), "tool_calls": raw_tool_calls},
                 },
             )
+        content = getattr(message, "content", "") or ""
         return ModelResponse(
-            final_answer=FinalAnswer(content=getattr(message, "content", "") or ""),
+            final_answer=FinalAnswer(content=content) if content else None,
             usage=usage,
             provider_request_id=getattr(response, "id", None),
             raw_metadata={
                 "finish_reason": finish_reason,
-                "message": {"role": "assistant", "content": getattr(message, "content", "") or ""},
+                "message": {"role": "assistant", "content": content},
             },
         )

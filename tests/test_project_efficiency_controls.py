@@ -188,7 +188,7 @@ class ProtocolThenResponseProvider(ModelProvider):
         return response
 
 
-def test_read_only_streak_inserts_action_required(tmp_path: Path):
+def test_read_only_calls_keep_normal_tools_available(tmp_path: Path):
     cfg = config(tmp_path, mode="static", max_sessions=1)
     cfg.planning.initial_plan.min_tasks = 1
     cfg.agent.max_steps = 10
@@ -209,15 +209,11 @@ def test_read_only_streak_inserts_action_required(tmp_path: Path):
     tools_after_three_reads = {tool["function"]["name"] for tool in provider.tools_seen[4]}
     assert "read_file" in tools_after_three_reads
     assert "bash" in tools_after_three_reads
-    assert any("action_required:" in item.get("content", "") for item in provider.messages[-1] if item["role"] == "user")
-    action_tool_names = {tool["function"]["name"] for tool in provider.tools_seen[-1]}
-    assert "write_file" in action_tool_names
-    assert "request_task_completion" in action_tool_names
-    assert "read_file" not in action_tool_names
-    assert "bash" not in action_tool_names
+    final_tool_names = {tool["function"]["name"] for tool in provider.tools_seen[-1]}
+    assert {"read_file", "bash", "write_file", "request_task_completion"} <= final_tool_names
 
 
-def test_repeated_read_file_is_suppressed(tmp_path: Path):
+def test_repeated_read_file_is_recorded_without_suppression(tmp_path: Path):
     cfg = config(tmp_path, mode="static", max_sessions=1)
     cfg.planning.initial_plan.min_tasks = 1
     (cfg.workspace.root / "a.py").write_text("VALUE = 1\n", encoding="utf-8")
@@ -233,11 +229,12 @@ def test_repeated_read_file_is_suppressed(tmp_path: Path):
     store = ProjectStateStore(cfg.state.root, workspace_root=cfg.workspace.root)
     session = store.read_sessions("repeat-read")[0]
     events = store.read_events("repeat-read")
-    assert session["suppressed_tool_calls"]
-    assert "repeated_tool_call_suppressed" in {event["event_type"] for event in events}
+    assert session["repeated_tool_calls"]
+    assert session["suppressed_tool_calls"] == []
+    assert "repeated_tool_call_suppressed" not in {event["event_type"] for event in events}
 
 
-def test_write_file_resets_read_only_streak(tmp_path: Path):
+def test_write_after_reads_does_not_inject_action_requirement(tmp_path: Path):
     cfg = config(tmp_path, mode="static", max_sessions=1)
     cfg.planning.initial_plan.min_tasks = 1
     (cfg.workspace.root / "a.py").write_text("VALUE = 1\n", encoding="utf-8")

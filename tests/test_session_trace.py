@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from longrun_agent.orchestration.session_trace import READ_ONLY_STREAK_LIMIT, SessionTrace
+from longrun_agent.orchestration.session_trace import SessionTrace
 from longrun_agent.protocol import ErrorType, ToolCall, ToolResult
 
 
@@ -132,7 +132,6 @@ def test_pytest_collect_only_is_inspection_not_verification_progress() -> None:
     assert trace.successful_test_commands == []
     assert trace.successful_acceptance_commands == []
     assert trace.bash_observations[0].is_verification is False
-    assert trace.read_only_streak == 1
     assert trace.no_progress(progress_count=0, terminal_signal=None) is True
 
 
@@ -160,57 +159,19 @@ def test_bash_call_key_uses_normalized_argv() -> None:
     assert numeric == string
 
 
-def test_repeated_read_is_suppressed_until_a_file_changes() -> None:
+def test_repeated_reads_are_recorded_as_telemetry() -> None:
     trace = SessionTrace()
-    read_a = ToolCall(id="a1", name="read_file", arguments={"path": "a.py"})
-    read_b = ToolCall(id="b1", name="read_file", arguments={"path": "b.py"})
-
-    for call in (read_a, read_b):
-        trace.record(
-            call,
-            ToolResult(
-                tool_call_id=call.id,
-                tool_name="read_file",
-                success=True,
-                summary="read succeeded",
-                metadata={"path": call.arguments["path"]},
-            ),
-        )
-
-    assert trace.should_suppress(ToolCall(id="a2", name="read_file", arguments={"path": "a.py"}))
-    trace.record_suppressed(ToolCall(id="a2", name="read_file", arguments={"path": "a.py"}))
-    assert "next call must edit, run focused tests, complete, or report a blocker" in (trace.action_required_message or "")
-
-    trace.record(
-        ToolCall(id="w1", name="write_file", arguments={"path": "a.py", "content": "VALUE = 2\n"}),
-        ToolResult(
-            tool_call_id="w1",
-            tool_name="write_file",
-            success=True,
-            summary="write succeeded",
-            metadata={"path": "a.py", "status": "updated"},
-        ),
+    call = ToolCall(id="a1", name="read_file", arguments={"path": "a.py"})
+    result = ToolResult(
+        tool_call_id=call.id,
+        tool_name="read_file",
+        success=True,
+        summary="read succeeded",
+        metadata={"path": "a.py"},
     )
-    assert not trace.should_suppress(ToolCall(id="a3", name="read_file", arguments={"path": "a.py"}))
 
+    trace.record(call, result)
+    trace.record(call.model_copy(update={"id": "a2"}), result.model_copy(update={"tool_call_id": "a2"}))
 
-def test_read_only_limit_blocks_new_files_and_bash_inspection() -> None:
-    trace = SessionTrace()
-    paths = tuple(f"{index}.py" for index in range(READ_ONLY_STREAK_LIMIT))
-    for index, path in enumerate(paths, start=1):
-        trace.record(
-            ToolCall(id=f"r{index}", name="read_file", arguments={"path": path}),
-            ToolResult(
-                tool_call_id=f"r{index}",
-                tool_name="read_file",
-                success=True,
-                summary="read succeeded",
-                metadata={"path": path},
-            ),
-        )
-
-    assert trace.should_suppress(ToolCall(id="r-next", name="read_file", arguments={"path": "new.py"}))
-    assert trace.should_suppress(ToolCall(id="b1", name="bash", arguments={"argv": ["cat", "-n", "new.py"]}))
-    assert not trace.should_suppress(
-        ToolCall(id="b2", name="bash", arguments={"argv": ["python", "-m", "pytest", "-q", "tests/test_new.py"]})
-    )
+    assert trace.repeated_tool_calls
+    assert trace.suppressed_tool_calls == []

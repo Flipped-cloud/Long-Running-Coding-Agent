@@ -17,7 +17,6 @@ def _append_unique(items: list[str], value: str | None) -> None:
 
 
 SECRET_MARKERS = ("api_key", "apikey", "token", "secret", "password", "authorization", "bearer ")
-READ_ONLY_STREAK_LIMIT = 8
 
 
 @dataclass
@@ -64,11 +63,8 @@ class SessionTrace:
     tool_argument_protocol_retry_count: int = 0
     last_tool_summary: str | None = None
     last_bash_summary: str | None = None
-    read_only_streak: int = 0
     action_required_message: str | None = None
-    _last_call_key: str | None = None
     _seen_calls: Counter[str] = field(default_factory=Counter)
-    _successful_read_indices: dict[str, int] = field(default_factory=dict)
     _op_index: int = 0
     _last_write_index: int = 0
     _last_successful_verification_index: int = 0
@@ -81,26 +77,6 @@ class SessionTrace:
             except (TypeError, ValueError):
                 pass
         return f"{call.name}:{json.dumps(arguments, sort_keys=True, default=_unsupported_argument)}"
-
-    def should_suppress(self, call: ToolCall) -> bool:
-        key = self.call_key(call)
-        if self._last_call_key == key:
-            return True
-        if self.read_only_streak >= READ_ONLY_STREAK_LIMIT and self._is_read_only_call(call):
-            return True
-        return call.name == "read_file" and self._successful_read_indices.get(key, 0) > self._last_write_index
-
-    def record_suppressed(self, call: ToolCall) -> None:
-        key = self.call_key(call)
-        _append_unique(self.repeated_tool_calls, key)
-        _append_unique(self.suppressed_tool_calls, key)
-        self.last_tool_summary = "repeated tool call suppressed; previous result is already available"
-        if self._is_read_only_call(call):
-            self.action_required_message = (
-                "action_required: The read-only operation limit was reached and this call was suppressed. "
-                "Use existing observations; next call must edit, run focused tests, complete, or report a blocker."
-            )
-        self._last_call_key = key
 
     def record_policy_gate(self, result: ToolResult, *, counts_as_progress: bool = False) -> None:
         self.policy_gate_count += 1
@@ -115,18 +91,15 @@ class SessionTrace:
         if self._seen_calls[key] == 2:
             self.repeated_tool_calls.append(key)
         self.last_tool_summary = result.summary
-        self._last_call_key = key
         if call.name == "read_file" and result.success:
-            self._successful_read_indices[key] = self._op_index
             _append_unique(self.read_files, str(result.metadata.get("path") or call.arguments.get("path") or ""))
-            self._record_read_only_success()
         elif call.name == "write_file" and result.success:
             path = str(result.metadata.get("path") or call.arguments.get("path") or "")
             _append_unique(self.written_files, path)
             if result.metadata.get("status") in {"created", "updated"}:
                 _append_unique(self.changed_files, path)
                 self._last_write_index = self._op_index
-                self._reset_read_only_streak()
+                self.action_required_message = None
         elif call.name == "bash":
             command = str(result.metadata.get("command") or "")
             is_verification = _is_verification_command(command)
@@ -166,41 +139,10 @@ class SessionTrace:
                 )
             )
             self.last_bash_summary = result.summary
-            if result.success and _is_read_only_bash(command):
-                self._record_read_only_success()
-            elif result.success and is_verification and exit_code != 0:
-                self._record_read_only_success()
-            elif result.success:
-                self._reset_read_only_streak()
+            if result.success and not result.metadata.get("unsupported_shell_syntax"):
+                self.action_required_message = None
         elif call.name in {"report_blocker", "request_task_completion", "request_decomposition"} and result.success:
-            self._reset_read_only_streak()
-
-    def _record_read_only_success(self) -> None:
-        self.read_only_streak += 1
-        if self.read_only_streak >= READ_ONLY_STREAK_LIMIT:
-            self.action_required_message = (
-                f"action_required: You have made {READ_ONLY_STREAK_LIMIT} consecutive read-only successful tool calls. "
-                "The next model turn exposes action tools only. Use write_file based on existing evidence, "
-                "request_task_completion only when verified, or report_progress with the exact missing information. "
-                "Use report_blocker only for an external condition outside the workspace."
-            )
-
-    def _reset_read_only_streak(self) -> None:
-        self.read_only_streak = 0
-        self.action_required_message = None
-
-    @staticmethod
-    def _is_read_only_call(call: ToolCall) -> bool:
-        if call.name == "read_file":
-            return True
-        if call.name != "bash":
-            return False
-        try:
-            arguments = BashArgs.model_validate(call.arguments)
-        except (TypeError, ValueError):
-            return False
-        command = " ".join(arguments.argv) if arguments.argv is not None else arguments.command or ""
-        return _is_read_only_bash(command)
+            self.action_required_message = None
 
     def no_progress(self, *, progress_count: int, terminal_signal: object | None) -> bool:
         return (
@@ -267,11 +209,6 @@ class SessionTrace:
             "tool_argument_protocol_retry_count": self.tool_argument_protocol_retry_count,
             "last_tool_summary": self.last_tool_summary,
         }
-
-
-def _is_read_only_bash(command: str) -> bool:
-    first = command.strip().split(maxsplit=1)[0].lower() if command.strip() else ""
-    return first in {"ls", "dir", "find", "grep", "rg", "cat", "type", "pwd", "python"} and not _is_verification_command(command)
 
 
 def _unsupported_argument(value: Any) -> dict[str, str]:

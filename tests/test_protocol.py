@@ -1,4 +1,7 @@
-from longrun_agent.protocol import AgentToolCall, EventRecord, ModelResponse, ToolResult
+import pytest
+from pydantic import ValidationError
+
+from longrun_agent.protocol import AgentToolCall, EventRecord, FinalAnswer, ModelResponse, ToolResult
 
 
 def test_protocol_serialization_roundtrip():
@@ -29,3 +32,9 @@ def test_protocol_serialization_roundtrip():
         elapsed_seconds=0,
     )
     assert EventRecord.model_validate_json(event.model_dump_json()).run_id == "r1"
+
+
+def test_model_response_rejects_ambiguous_action():
+    call = AgentToolCall(call_id="c1", tool_name="read_file", arguments={"path": "a.py"})
+    with pytest.raises(ValidationError, match="both tool calls and a final answer"):
+        ModelResponse(tool_calls=[call], final_answer=FinalAnswer(content="done"))

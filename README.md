@@ -66,37 +66,15 @@ Project / Task / Session:
 - `Task`: one independently actionable subgoal in the external project plan.
 - `Session`: one `AgentLoop.run()` invocation for one active task.
 
-`RunStatus.COMPLETED` only means the model ended a session. A task becomes `CANDIDATE_COMPLETE` only when the session calls `request_task_completion`. `CANDIDATE_COMPLETE` is not `VERIFIED`; future work will add a verification gate.
+`RunStatus.COMPLETED` only means the model ended a session. A task becomes `CANDIDATE_COMPLETE` only when the session calls `request_task_completion`; contract verification then moves it through `VERIFICATION_PENDING` to `VERIFIED`, or reopens it when checks fail.
 If bounded recovery selects `retry_with_guidance`, the current session ends, the guidance is recorded in task progress notes, and the task returns to `READY` so the next session prompt includes that guidance.
 Project Sessions stop immediately after a successful terminal control signal. In Project mode, a plain `FinalAnswer` is treated as a protocol problem and the loop asks for `request_task_completion`, `report_blocker`, or `request_decomposition`; it is not converted into task completion.
 
-```mermaid
-flowchart TD
-    Orchestrator["ProjectOrchestrator"] --> Store["StateStore"]
-    Orchestrator --> Selector["TaskSelector"]
-    Selector --> Loop["AgentLoop"]
-    Loop --> Signal["ControlSignal"]
-    Signal --> Transition["StateTransition"]
-    Transition --> Decomposer["Decomposer / RecoveryPlanner"]
-    Decomposer --> Store
-    Transition --> Selector
-```
+Planning flow: `ProjectOrchestrator -> TaskSelector -> AgentLoop -> ControlSignal -> StateTransition -> persistence or recovery`.
 
 Task state machine:
 
-```mermaid
-stateDiagram-v2
-    [*] --> PENDING
-    PENDING --> READY
-    READY --> IN_PROGRESS
-    READY --> FAILED
-    IN_PROGRESS --> BLOCKED
-    IN_PROGRESS --> CANDIDATE_COMPLETE
-    IN_PROGRESS --> DECOMPOSED
-    IN_PROGRESS --> FAILED
-    BLOCKED --> READY
-    BLOCKED --> DECOMPOSED
-```
+Normal progress is `PENDING -> READY -> IN_PROGRESS -> CANDIDATE_COMPLETE -> VERIFICATION_PENDING -> VERIFIED`. A task may instead become `BLOCKED`, `DECOMPOSED`, `FAILED`, or `REOPENED` according to control and verification results.
 
 Initial Planning uses native tool calling with `submit_plan`. Plans are coarse-grained, use explicit dependencies, and start with `PENDING` tasks. As-Needed Decomposition runs only after a blocker or failed progress signal requires it. Bounded Planning Search is a depth-1 generate/evaluate/select step for recovery candidates; it is not full Tree-of-Thought BFS/DFS and does not copy or execute repository branches.
 
@@ -111,22 +89,7 @@ Planning modes:
 
 v0.4 adds a separate knowledge layer. It does not let the model write memories directly into project state, and it does not auto-execute learned skills. Sessions produce deterministic evidence packs from observed tool traces; reflection candidates must cite evidence IDs before they can become active memories. Skills are promoted only after verified successful runs.
 
-```mermaid
-flowchart TD
-    Session["Project Session"] --> Trace["SessionTrace"]
-    Trace --> Episode["Experience Evidence Pack"]
-    Episode --> Store["KnowledgeStore"]
-    Episode --> Reflection["Reflection Candidate"]
-    Reflection --> Gate["Evidence Gate"]
-    Gate --> Memory["Active / Quarantined Memory"]
-    Episode --> Skill["Validated Skill Candidate"]
-    Memory --> Retrieval["Deterministic Retrieval"]
-    Skill --> Retrieval
-    Retrieval --> Context["Budgeted Context Injection"]
-    Context --> Session
-    Session --> Use["report_knowledge_use"]
-    Use --> Store
-```
+Knowledge flow: `SessionTrace -> evidence episode -> reflection gate -> memory or skill -> deterministic retrieval -> budgeted context injection -> usage feedback`.
 
 Knowledge modes:
 
@@ -238,10 +201,10 @@ The script shows the failing baseline, the live model/tool loop, and an independ
 
 ## Long-Horizon Architecture Demo
 
-The complementary `workflow_service` case exercises the higher-level project architecture with a bounded five-task dependency plan, persisted Sessions, structured context handoffs, knowledge lifecycle recording, frozen contract verification, hidden tests, and an independent oracle. It is configured for a 30-55 minute target window with a 60-minute shell watchdog:
+The complementary `workflow_service` case exercises the higher-level project architecture with a bounded five-task dependency plan, persisted Sessions, structured context handoffs, knowledge lifecycle recording, frozen contract verification, hidden tests, and an independent oracle. It is designed to take about 30 minutes with the configured model; the 55-minute project budget and 60-minute shell watchdog are safety limits rather than duration targets. Use a fresh project ID each time:
 
 ```bash
-PROJECT_ID=architecture-bounded-01 bash scripts/run_long_horizon_real_api.sh
+PROJECT_ID="assessment-$(date -u +%Y%m%dT%H%M%SZ)" MINIMUM_SECONDS=0 bash scripts/run_long_horizon_real_api.sh
 ```
 
 See `evals/long_horizon/VIDEO_DEMO.md` for Ubuntu setup, resume instructions, output locations, and an edited-video shot list.
@@ -365,20 +328,7 @@ Runtime boundaries:
 
 Context reset is not a new task session. It does not increment task attempts, project session count, task session IDs, decomposition counters, or no-progress counters. It only increments context segment/reset counters and rebuilds input from ProjectState plus the latest task-local structured handoff.
 
-```mermaid
-flowchart TD
-    Orchestrator["ProjectOrchestrator"] --> Seed["TaskContextSeed"]
-    Seed --> Lifecycle["ContextLifecycleManager"]
-    Lifecycle --> Budget["ContextBudgetManager"]
-    Budget --> Buffer["ContextBuffer"]
-    Buffer --> Provider["ModelProvider"]
-    Provider --> Tool["Tool Interaction"]
-    Tool --> Stale["StaleTracker"]
-    Stale --> Pruner["DeterministicPruner"]
-    Pruner --> Compactor["StructuredCompactor"]
-    Compactor --> Reset["Context Reset"]
-    Reset --> Same["Same Task Session"]
-```
+Context flow: `TaskContextSeed -> budget measurement -> ContextBuffer -> model/tool turn -> stale tracking -> deterministic pruning -> optional structured reset in the same Session`.
 
 Context modes:
 
@@ -568,20 +518,7 @@ Integrity verification rejects protected or trusted-test modification, forbidden
 
 Verdicts are `verified`, `partial`, `reopened`, `inconclusive`, `infrastructure_error`, and `contract_invalid`. Verification failure reopens the relevant task; infrastructure failure is not classified as an implementation failure. `CANDIDATE_COMPLETE`, `VERIFICATION_PENDING`, `REOPENED`, and `VERIFIED` remain distinct persisted states.
 
-```mermaid
-flowchart LR
-    A[EvaluationCoordinator] --> B[TaskAdapter]
-    B --> C[ProjectOrchestrator]
-    C --> D[CompletionCandidate]
-    D --> E[VerificationGateway]
-    E --> F[SnapshotManager]
-    F --> G[CheckRunner]
-    G --> H[VerificationReport]
-    H --> I[VERIFIED / REOPENED]
-    I --> J[TrajectoryAnalyzer]
-    J --> K[FailureAttributor]
-    K --> L[AggregateReporter]
-```
+Verification flow: `CompletionCandidate -> frozen contract -> isolated snapshot -> checks -> VerificationReport -> VERIFIED or REOPENED`; offline evaluation then analyzes the trajectory and attributes failures.
 
 ### Commands
 

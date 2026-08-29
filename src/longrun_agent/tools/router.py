@@ -55,6 +55,18 @@ class ToolRouter:
                 retryable=True,
                 metadata=metadata,
             )
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            return ToolResult(
+                tool_call_id=call.id,
+                tool_name=call.name,
+                success=False,
+                summary=f"{call.name} failed internally",
+                output=message,
+                error_type=ErrorType.TOOL_INTERNAL,
+                error_message=message,
+                metadata={"duration_seconds": time.monotonic() - started},
+            )
 
 
 def _attach_normalizations(metadata: dict, records: list[ArgumentNormalization]) -> None:

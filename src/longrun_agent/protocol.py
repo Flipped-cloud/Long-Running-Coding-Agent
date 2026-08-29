@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
 class ErrorType(StrEnum):
@@ -91,6 +91,12 @@ class ModelResponse(BaseModel):
     usage: dict[str, int] = Field(default_factory=dict)
     provider_request_id: str | None = None
     raw_metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_single_action(self) -> ModelResponse:
+        if self.tool_calls and self.final_answer is not None:
+            raise ValueError("model response cannot contain both tool calls and a final answer")
+        return self
 
     @property
     def kind(self) -> Literal["tool_calls", "final_answer"]:

@@ -85,6 +85,7 @@ else
   echo "[resume] continuing persisted project $PROJECT_ID"
 fi
 echo "[architecture] static dependency DAG + persisted Sessions + structured handoffs + knowledge + contract verification"
+echo "[estimate] expected runtime is about 30 minutes; the 60-minute watchdog is a safety limit"
 
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 STARTED_EPOCH="$(date +%s)"

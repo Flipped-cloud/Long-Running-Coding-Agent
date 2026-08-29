@@ -125,6 +125,10 @@ def test_static_plan_has_expected_unique_dag():
     for key in keys:
         visit(key)
     assert set(by_key["integration-docs"]["depends_on_keys"]) == set(keys) - {"integration-docs"}
+    lifecycle_check = by_key["lifecycle-core"]["acceptance_criteria"][-1]
+    assert "-k 'run_requires_satisfied_dependencies" in lifecycle_check
+    cli_check = by_key["cli-execution"]["acceptance_criteria"][-1]
+    assert "-k 'run_retry_cancel_paths or retry_failed_task'" in cli_check
 
 
 def test_long_horizon_contract_keeps_hidden_oracle_outside_workspace():

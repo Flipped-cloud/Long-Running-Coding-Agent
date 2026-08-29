@@ -97,6 +97,12 @@ def test_provider_returns_final_answer_and_usage():
     assert result.usage == {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120}
 
 
+def test_provider_returns_empty_action_for_empty_message():
+    result = OpenAICompatibleProvider._convert_response(response_with_message(text_message("")))
+    assert result.final_answer is None
+    assert result.tool_calls == []
+
+
 def test_provider_returns_one_tool_call_with_raw_metadata():
     message = SimpleNamespace(content=None, tool_calls=[tool_call("c1", "read_file", '{"path":"calculator.py"}')])
     result = OpenAICompatibleProvider._convert_response(response_with_message(message, usage=usage(1, 2, 3), response_id="resp-tools"))

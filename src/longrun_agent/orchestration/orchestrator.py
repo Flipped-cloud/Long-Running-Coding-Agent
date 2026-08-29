@@ -22,7 +22,7 @@ from longrun_agent.knowledge.tools import KnowledgeUseChannel, ReportKnowledgeUs
 from longrun_agent.model.base import ModelProvider
 from longrun_agent.orchestration.outcome import ProjectRunOutcome
 from longrun_agent.orchestration.session_prompt import build_task_context_seed, build_task_session_prompt
-from longrun_agent.orchestration.session_trace import READ_ONLY_STREAK_LIMIT, SessionTrace
+from longrun_agent.orchestration.session_trace import SessionTrace
 from longrun_agent.planning.decomposer import AsNeededDecomposer
 from longrun_agent.planning.initial_planner import InitialPlanner
 from longrun_agent.planning.recovery_evaluator import RecoveryCandidateEvaluator
@@ -578,14 +578,6 @@ class ProjectOrchestrator:
             router,
             channel,
             trace,
-            on_suppressed=lambda call_key: self._logger(state).log(
-                "repeated_tool_call_suppressed",
-                project_id=state.project_id,
-                task_id=task.id,
-                session_id=session_id,
-                plan_version=state.plan_version,
-                payload={"call_key": call_key},
-            ),
             on_unsupported_shell=lambda result: self._logger(state).log(
                 "unsupported_shell_syntax",
                 project_id=state.project_id,
@@ -1614,32 +1606,15 @@ class _ChannelRouter(ToolRouter):
         inner: ToolRouter,
         channel: TaskControlChannel,
         trace: SessionTrace,
-        on_suppressed=None,
         on_unsupported_shell=None,
         knowledge_channel=None,
     ):
         super().__init__(list(inner.tools.values()))
         self.channel = channel
         self.trace = trace
-        self.on_suppressed = on_suppressed
         self.on_unsupported_shell = on_unsupported_shell
         self.knowledge_channel = knowledge_channel
         self.action_required_message: str | None = None
-
-    def schemas(self) -> list[dict]:
-        schemas = super().schemas()
-        if self.trace.read_only_streak < READ_ONLY_STREAK_LIMIT:
-            return schemas
-        action_tools = {
-            "write_file",
-            "report_knowledge_use",
-            "report_progress",
-            "report_blocker",
-            "request_task_completion",
-            "request_decomposition",
-            "register_test_candidate",
-        }
-        return [schema for schema in schemas if schema.get("function", {}).get("name") in action_tools]
 
     def execute(self, call, context):
         context.control_channel = self.channel
@@ -1663,24 +1638,6 @@ class _ChannelRouter(ToolRouter):
             self.trace.record_policy_gate(result, counts_as_progress=True)
             self.action_required_message = result.output
             return result
-        if self.trace.should_suppress(call):
-            self.trace.record_suppressed(call)
-            call_key = self.trace.call_key(call)
-            if self.on_suppressed:
-                self.on_suppressed(call_key)
-            return ToolResult(
-                tool_call_id=call.id,
-                tool_name=call.name,
-                success=False,
-                summary="repeated_tool_call_suppressed",
-                output=(
-                    "This read-only operation was suppressed. Reuse existing observations. The next model turn exposes "
-                    "action tools only: edit the diagnosed file, complete when verified, or report precise remaining work."
-                ),
-                error_type=ErrorType.POLICY_GATE,
-                error_message="read-only operation suppressed; make progress before requesting more inspection",
-                metadata={"call_key": call_key, "suppressed": True},
-            )
         result = super().execute(call, context)
         self.trace.record(call, result)
         if result.error_type == ErrorType.GENERATED_TEST_REQUIREMENT_UNMET:

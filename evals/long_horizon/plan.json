@@ -4,11 +4,11 @@
     {
       "key": "lifecycle-core",
       "title": "Complete dependency-aware lifecycle execution",
-      "objective": "Finish WorkflowService run and retry behavior: reject unsatisfied dependencies, persist legal transitions and results, and emit complete audit events. Keep the completed foundation modules intact unless an integration defect requires a narrow change.",
+      "objective": "Finish only WorkflowService run and retry behavior: reject unsatisfied dependencies, persist legal transitions and results, and emit complete audit events. Do not implement propagation or idempotency in this task; those belong to the next task.",
       "acceptance_criteria": [
         "Run rejects blocked tasks and persists success or failure deterministically",
         "Retry enforces attempt limits and emits a task_retried audit event",
-        "Focused lifecycle run and retry tests pass"
+        "python -m pytest -q tests/test_service_lifecycle.py -k 'run_requires_satisfied_dependencies or run_success_records_result_and_audit or run_failure_records_error or retry_reopens_failed_task or retry_limit_is_enforced' passes"
       ],
       "depends_on_keys": []
     },
@@ -30,7 +30,7 @@
       "acceptance_criteria": [
         "run, retry, and cancel execute through WorkflowService",
         "Successful commands print deterministic JSON and invalid operations return non-zero with clear stderr",
-        "Focused CLI lifecycle tests pass"
+        "python -m pytest -q tests/test_cli.py -k 'run_retry_cancel_paths or retry_failed_task' passes"
       ],
       "depends_on_keys": ["lifecycle-core"]
     },

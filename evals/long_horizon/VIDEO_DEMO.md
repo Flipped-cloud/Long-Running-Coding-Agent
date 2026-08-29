@@ -13,7 +13,7 @@ This demonstration complements the short core-loop inventory demo. It uses a sta
 - isolated public and hidden tests plus test/configuration integrity checks;
 - independent post-run oracle validation and a machine-readable summary.
 
-The static plan is intentional: it keeps the demonstration reproducible while still exercising scheduling, dependency release, Session handoff, persistence, and verification. The project is limited to 10 Sessions and 55 minutes; the shell watchdog stops it after 60 minutes. Actual duration still depends on model and endpoint latency, but the intended range is approximately 30-55 minutes. Adaptive decomposition remains available when a task repeatedly fails.
+The static plan is intentional: it keeps the demonstration reproducible while still exercising scheduling, dependency release, Session handoff, persistence, and verification. The expected runtime is about 30 minutes with the configured model. The 55-minute project budget and 60-minute shell watchdog are safety limits, not duration targets. Actual duration still depends on model and endpoint latency. Adaptive decomposition remains available when a task repeatedly fails.
 
 ## Ubuntu run
 

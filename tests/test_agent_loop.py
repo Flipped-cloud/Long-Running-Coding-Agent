@@ -15,7 +15,7 @@ from longrun_agent.model.base import ModelProvider
 from longrun_agent.model.fake import FakeModelProvider, default_calculator_script
 from longrun_agent.orchestration.orchestrator import _ChannelRouter
 from longrun_agent.orchestration.session_prompt import build_task_context_seed, build_task_session_prompt
-from longrun_agent.orchestration.session_trace import READ_ONLY_STREAK_LIMIT, SessionTrace
+from longrun_agent.orchestration.session_trace import SessionTrace
 from longrun_agent.protocol import ErrorType, FinalAnswer, ModelResponse, RunStatus, ToolCall
 from longrun_agent.state.schema import ProjectState, TaskNode
 from longrun_agent.tools.base import ToolContext
@@ -363,31 +363,19 @@ def test_gate_rejected_write_is_not_repeated_action(tmp_path: Path):
     assert trace.no_progress(progress_count=0, terminal_signal=None) is False
 
 
-def test_channel_router_enforces_read_only_limit_until_write(tmp_path: Path):
+def test_channel_router_does_not_hide_or_suppress_read_tools(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    filenames = [f"{index}.py" for index in range(READ_ONLY_STREAK_LIMIT + 1)]
+    filenames = [f"{index}.py" for index in range(9)]
     for name in filenames:
         (repo / name).write_text("VALUE = 1\n", encoding="utf-8")
     trace = SessionTrace()
     router = _ChannelRouter(default_router(), TaskControlChannel(), trace)
     context = ToolContext(repo)
 
-    for index, name in enumerate(filenames[:-1], start=1):
+    for index, name in enumerate(filenames, start=1):
         assert router.execute(ToolCall(id=f"r{index}", name="read_file", arguments={"path": name}), context).success
-
-    blocked_path = filenames[-1]
-    blocked = router.execute(ToolCall(id="r-blocked", name="read_file", arguments={"path": blocked_path}), context)
-    assert not blocked.success
-    assert blocked.error_type == ErrorType.POLICY_GATE
-    assert blocked.metadata["suppressed"] is True
-
-    written = router.execute(
-        ToolCall(id="w1", name="write_file", arguments={"path": "a.py", "content": "VALUE = 2\n"}),
-        context,
-    )
-    assert written.success
-    assert router.execute(ToolCall(id="r-after-write", name="read_file", arguments={"path": blocked_path}), context).success
+    assert {schema["function"]["name"] for schema in router.schemas()} >= {"read_file", "bash", "write_file"}
 
 
 def test_write_after_knowledge_decision_is_legitimate_retry(tmp_path: Path):
