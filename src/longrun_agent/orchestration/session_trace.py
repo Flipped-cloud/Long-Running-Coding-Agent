@@ -102,7 +102,7 @@ class SessionTrace:
                 self.action_required_message = None
         elif call.name == "bash":
             command = str(result.metadata.get("command") or "")
-            is_verification = _is_verification_command(command)
+            is_verification = bool(result.metadata.get("verification_kind"))
             _append_unique(self.bash_commands, command)
             argv = result.metadata.get("argv") or []
             if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
@@ -213,15 +213,6 @@ class SessionTrace:
 
 def _unsupported_argument(value: Any) -> dict[str, str]:
     return {"unsupported_type": type(value).__name__}
-
-
-def _is_verification_command(command: str) -> bool:
-    lowered = command.lower()
-    return ("pytest" in lowered and not _is_pytest_collection_only(lowered)) or "task_service.cli" in lowered or "validate" in lowered
-
-
-def _is_pytest_collection_only(command: str) -> bool:
-    return "--collect-only" in command or bool(re.search(r"(^|\s)--co(\s|$)", command))
 
 
 def _safe_excerpt(output: str, *, workspace: object | None = None, artifact_path: str = "", limit: int = 4000) -> str:

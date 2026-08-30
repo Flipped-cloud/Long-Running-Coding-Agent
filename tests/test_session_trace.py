@@ -30,6 +30,7 @@ def test_bash_observation_records_failed_output_and_sanitizes_secret(tmp_path: P
                 "command": "python -m pytest -q",
                 "argv": ["python", "-m", "pytest", "-q"],
                 "exit_code": 1,
+                "verification_kind": "pytest",
                 "output_artifact": str(artifact),
             },
             artifact_path=str(artifact),
@@ -58,7 +59,12 @@ def test_bash_observation_excerpt_preserves_head_and_tail() -> None:
             success=True,
             summary="bash finished with exit code 1",
             output=long_output,
-            metadata={"command": "python -m pytest -q", "argv": ["python", "-m", "pytest", "-q"], "exit_code": 1},
+            metadata={
+                "command": "python -m pytest -q",
+                "argv": ["python", "-m", "pytest", "-q"],
+                "exit_code": 1,
+                "verification_kind": "pytest",
+            },
         ),
     )
 
@@ -125,6 +131,7 @@ def test_pytest_collect_only_is_inspection_not_verification_progress() -> None:
                 "command": "python -m pytest --collect-only -q",
                 "argv": ["python", "-m", "pytest", "--collect-only", "-q"],
                 "exit_code": 0,
+                "verification_kind": None,
             },
         ),
     )
@@ -133,6 +140,25 @@ def test_pytest_collect_only_is_inspection_not_verification_progress() -> None:
     assert trace.successful_acceptance_commands == []
     assert trace.bash_observations[0].is_verification is False
     assert trace.no_progress(progress_count=0, terminal_signal=None) is True
+
+
+def test_file_listing_with_pytest_path_is_not_verification() -> None:
+    trace = SessionTrace()
+    command = "find . -not -path './.pytest_cache/*'"
+    trace.record(
+        ToolCall(id="find", name="bash", arguments={"argv": ["find", "."]}),
+        ToolResult(
+            tool_call_id="find",
+            tool_name="bash",
+            success=True,
+            summary="bash finished with exit code 0",
+            metadata={"command": command, "exit_code": 0, "verification_kind": None},
+        ),
+    )
+
+    assert trace.successful_test_commands == []
+    assert trace.successful_acceptance_commands == []
+    assert trace.bash_observations[0].is_verification is False
 
 
 def test_policy_gate_does_not_turn_read_only_loop_into_progress() -> None:

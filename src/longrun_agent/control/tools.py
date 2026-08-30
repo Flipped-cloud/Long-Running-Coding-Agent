@@ -179,17 +179,21 @@ class RegisterTestCandidateTool(BaseTool):
         try:
             candidate = _channel(context).register_test_candidate(**arguments.model_dump())
             rejection = candidate.rejection_reasons[0] if candidate.rejection_reasons else None
+            if candidate.valid and not candidate.valid_but_irrelevant:
+                next_action = "Run regression tests and request task completion."
+            elif candidate.transition and candidate.transition.value == "F2F":
+                next_action = "Fix the implementation, rerun this same test, then register it again for F2P validation."
+            elif candidate.valid_but_irrelevant:
+                next_action = "Replace this test with one that fails on the baseline and targets the task behavior."
+            else:
+                next_action = "Restore the required behavior, then register a focused baseline-failing test."
             feedback = {
                 "candidate_id": candidate.candidate_id,
                 "transition": candidate.transition.value if candidate.transition else None,
                 "valid": candidate.valid,
                 "rejection_category": rejection,
                 "sanitized_reason": rejection or "candidate validation passed",
-                "recommended_next_action": (
-                    "Run regression tests and request task completion."
-                    if candidate.valid
-                    else "Revise the focused issue-reproduction test and register a new candidate."
-                ),
+                "recommended_next_action": next_action,
             }
             return ToolResult(
                 tool_call_id=call_id,

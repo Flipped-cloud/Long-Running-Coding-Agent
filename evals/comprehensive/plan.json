@@ -1,0 +1,65 @@
+{
+  "project_summary": "Complete and independently verify a durable workflow service while exercising generated-test validation, adaptive recovery, persisted Sessions, knowledge, and frozen-contract verification.",
+  "tasks": [
+    {
+      "key": "execution-contract",
+      "title": "Complete dependency-aware execution and retry",
+      "objective": "Implement service run and retry behavior, including dependency readiness, legal persisted transitions, attempt limits, and complete audit events. Add and register one focused generated test that fails on the supplied baseline and passes after the fix.",
+      "acceptance_criteria": [
+        "Blocked tasks cannot run and successful or failed operations persist deterministic terminal state",
+        "Retry enforces attempt limits and emits one task_retried audit event",
+        "One agent_tests test is registered with a valid baseline-to-candidate transition",
+        "Focused lifecycle tests pass"
+      ],
+      "depends_on_keys": []
+    },
+    {
+      "key": "propagation-contract",
+      "title": "Add transitive failure and cancellation propagation",
+      "objective": "Implement transitive failure and cancellation propagation without weakening lifecycle rules, then run the relevant propagation tests.",
+      "acceptance_criteria": [
+        "The complete dependent subgraph receives the source failure or cancellation reason",
+        "Unrelated branches preserve their current state",
+        "Every propagated mutation emits one ordered audit event",
+        "Relevant propagation tests pass"
+      ],
+      "depends_on_keys": ["execution-contract"]
+    },
+    {
+      "key": "idempotency-contract",
+      "title": "Add persistent create and cancel idempotency",
+      "objective": "Implement persistent create and cancel idempotency across service reconstruction, then run the relevant idempotency tests.",
+      "acceptance_criteria": [
+        "Identical create and cancel replay returns the original result",
+        "Idempotent replay survives service reconstruction and conflicting key reuse fails",
+        "Audit events are not duplicated by identical replay",
+        "Relevant idempotency tests pass"
+      ],
+      "depends_on_keys": ["propagation-contract"]
+    },
+    {
+      "key": "cli-data-contract",
+      "title": "Complete CLI lifecycle, data, and reporting paths",
+      "objective": "Wire lifecycle commands, validated import, canonical export, and metrics through WorkflowService, then run the complete public CLI suite.",
+      "acceptance_criteria": [
+        "run, retry, cancel, import, export, and metrics have deterministic JSON success behavior",
+        "Invalid operations return non-zero with clear stderr and invalid imports preserve existing state",
+        "Import/export round trips preserve tasks and validate the complete graph",
+        "tests/test_cli.py passes"
+      ],
+      "depends_on_keys": ["execution-contract", "propagation-contract", "idempotency-contract"]
+    },
+    {
+      "key": "integrated-verification",
+      "title": "Integrate documentation and prove the frozen contract",
+      "objective": "Resolve remaining integration defects, document the full design, and execute the complete public suite before requesting completion.",
+      "acceptance_criteria": [
+        "README documents architecture and executable end-to-end CLI examples",
+        "The earlier generated-test evidence remains preserved",
+        "python -m pytest -q passes",
+        "All changes remain inside the contract allowlist and preserve protected inputs"
+      ],
+      "depends_on_keys": ["execution-contract", "propagation-contract", "idempotency-contract", "cli-data-contract"]
+    }
+  ]
+}

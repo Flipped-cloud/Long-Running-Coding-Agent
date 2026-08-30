@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+
 from longrun_agent.config import BoundedSearchConfig, DecompositionConfig
+from longrun_agent.exceptions import ToolArgumentsProtocolError
 from longrun_agent.model.base import ModelProvider
 from longrun_agent.planning.prompts import RECOVERY_EVALUATOR_PROMPT
 from longrun_agent.planning.protocol import RecoveryCandidate, RecoverySelection
@@ -49,10 +52,29 @@ class RecoveryCandidateEvaluator:
         valid_ids = {candidate.id for candidate in candidates}
         if not valid_ids:
             raise ValueError("no valid recovery candidates")
-        messages = [{"role": "system", "content": RECOVERY_EVALUATOR_PROMPT}, {"role": "user", "content": "\n".join(valid_ids)}]
+        if len(candidates) == 1:
+            return RecoverySelection(
+                selected_candidate_id=candidates[0].id,
+                scores=[],
+                selection_reason="Only valid recovery candidate.",
+            )
+        messages = [
+            {"role": "system", "content": RECOVERY_EVALUATOR_PROMPT},
+            {"role": "user", "content": json.dumps([candidate.model_dump(mode="json") for candidate in candidates], sort_keys=True)},
+        ]
         last_error: Exception | None = None
         for _ in range(self.config.max_protocol_retries):
-            response = self.model.generate(messages, [SELECT_RECOVERY_CANDIDATE_SCHEMA])
+            try:
+                response = self.model.generate(messages, [SELECT_RECOVERY_CANDIDATE_SCHEMA])
+            except ToolArgumentsProtocolError as exc:
+                last_error = exc
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"Tool arguments were invalid JSON: {exc.parse_error}. Call select_recovery_candidate again.",
+                    }
+                )
+                continue
             try:
                 calls = [call for call in response.tool_calls if call.name == "select_recovery_candidate"]
                 if len(calls) != 1:
@@ -63,5 +85,10 @@ class RecoveryCandidateEvaluator:
                 return selection
             except Exception as exc:
                 last_error = exc
-                messages.append({"role": "user", "content": f"Selection protocol error: {exc}. Try again."})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"Selection protocol error: {exc}. Select exactly one of: {sorted(valid_ids)}.",
+                    }
+                )
         raise ValueError(f"recovery candidate evaluation failed: {last_error}")

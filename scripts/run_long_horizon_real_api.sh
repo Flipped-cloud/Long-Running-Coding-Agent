@@ -17,6 +17,7 @@ fi
 
 PYTHON_BIN="${LONGRUN_PYTHON_BIN:-python}"
 AGENT_BIN="${LONGRUN_AGENT_BIN:-longrun-agent}"
+CASE_PROFILE="${CASE_PROFILE:-long_horizon}"
 REQUESTED_PROJECT_ID="${PROJECT_ID:-}"
 RESUME_PROJECT="${RESUME_PROJECT:-0}"
 if [[ "$RESUME_PROJECT" != "0" && "$RESUME_PROJECT" != "1" ]]; then
@@ -29,12 +30,34 @@ if [[ "$RESUME_PROJECT" == "1" && -z "$REQUESTED_PROJECT_ID" ]]; then
 fi
 PROJECT_ID="${REQUESTED_PROJECT_ID:-long-horizon-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 MINIMUM_SECONDS="${MINIMUM_SECONDS:-0}"
-RUN_TIMEOUT_SECONDS="${RUN_TIMEOUT_SECONDS:-3600}"
-CONFIG="$REPO_ROOT/configs/long_horizon_real_api.yaml"
 FIXTURE="$REPO_ROOT/examples/long_horizon_repo"
-TASK_FILE="$REPO_ROOT/evals/long_horizon/TASK.md"
 HIDDEN_TESTS="$REPO_ROOT/evals/long_horizon/hidden_assets/hidden_tests"
-RUN_ROOT="$REPO_ROOT/.runs/long_horizon_real_api"
+VALIDATOR_EXTRA_ARGS=()
+case "$CASE_PROFILE" in
+  long_horizon)
+    CONFIG="$REPO_ROOT/configs/long_horizon_real_api.yaml"
+    TASK_FILE="$REPO_ROOT/evals/long_horizon/TASK.md"
+    PLAN_FILE="$REPO_ROOT/evals/long_horizon/plan.json"
+    RUN_NAMESPACE="long_horizon_real_api"
+    CASE_DESCRIPTION="5-task bounded workflow service plan"
+    DEFAULT_RUN_TIMEOUT_SECONDS=3600
+    ;;
+  comprehensive)
+    CONFIG="$REPO_ROOT/configs/comprehensive_real_api.yaml"
+    TASK_FILE="$REPO_ROOT/evals/comprehensive/TASK.md"
+    PLAN_FILE="$REPO_ROOT/evals/comprehensive/plan.json"
+    RUN_NAMESPACE="comprehensive_real_api"
+    CASE_DESCRIPTION="5-task generated-test and adaptive-recovery qualification plan"
+    DEFAULT_RUN_TIMEOUT_SECONDS=4200
+    VALIDATOR_EXTRA_ARGS=(--generated-test-dir agent_tests)
+    ;;
+  *)
+    echo "unknown CASE_PROFILE: $CASE_PROFILE" >&2
+    exit 2
+    ;;
+esac
+RUN_TIMEOUT_SECONDS="${RUN_TIMEOUT_SECONDS:-$DEFAULT_RUN_TIMEOUT_SECONDS}"
+RUN_ROOT="$REPO_ROOT/.runs/$RUN_NAMESPACE"
 WORKSPACE="$RUN_ROOT/workspaces/$PROJECT_ID"
 RESULT_DIR="$RUN_ROOT/results/$PROJECT_ID"
 STATE_ROOT="$RUN_ROOT/projects"
@@ -62,13 +85,17 @@ else
   mkdir -p "$WORKSPACE" "$RESULT_DIR"
   cp -R "$FIXTURE/." "$WORKSPACE/"
   cp "$TASK_FILE" "$WORKSPACE/TASK.md"
+  git -C "$WORKSPACE" init --quiet
+  git -C "$WORKSPACE" config --local core.excludesFile "$REPO_ROOT/.gitignore"
+  git -C "$WORKSPACE" add .
+  git -C "$WORKSPACE" -c user.name=Longrun-Agent -c user.email=longrun-agent@local commit --quiet -m baseline
 fi
 
 export LONGRUN_WORKSPACE="$WORKSPACE"
-export LONGRUN_PLAN_FILE="$REPO_ROOT/evals/long_horizon/plan.json"
+export LONGRUN_PLAN_FILE="$PLAN_FILE"
 
 if [[ "$RESUME_PROJECT" == "0" ]]; then
-  echo "[baseline] 5-task bounded workflow service plan"
+  echo "[baseline] $CASE_DESCRIPTION"
   echo "[baseline] proving the copied workspace is incomplete"
   set +e
   (
@@ -84,8 +111,11 @@ if [[ "$RESUME_PROJECT" == "0" ]]; then
 else
   echo "[resume] continuing persisted project $PROJECT_ID"
 fi
-echo "[architecture] static dependency DAG + persisted Sessions + structured handoffs + knowledge + contract verification"
-echo "[estimate] expected runtime is about 30 minutes; the 60-minute watchdog is a safety limit"
+echo "[architecture] dependency DAG + persisted Sessions + structured handoffs + knowledge + contract verification"
+if [[ "$CASE_PROFILE" == "comprehensive" ]]; then
+  echo "[coverage] generated-test F2P validation + adaptive recovery search + independent oracle"
+fi
+echo "[estimate] expected runtime is about 30 minutes; the watchdog is a safety limit"
 
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 STARTED_EPOCH="$(date +%s)"
@@ -106,6 +136,7 @@ finalize_run() {
     --task-file "$TASK_FILE" \
     --config "$CONFIG" \
     --hidden-tests "$HIDDEN_TESTS" \
+    "${VALIDATOR_EXTRA_ARGS[@]}" \
     --output "$ORACLE_PATH"
   oracle_exit_code=$?
 
@@ -134,7 +165,7 @@ finalize_run() {
   echo "oracle: $ORACLE_PATH"
   echo "summary: $SUMMARY_PATH"
   echo "elapsed_seconds: $ELAPSED_SECONDS"
-  echo "resume: PROJECT_ID=\"$PROJECT_ID\" RESUME_PROJECT=1 MINIMUM_SECONDS=0 bash \"$REPO_ROOT/scripts/run_long_horizon_real_api.sh\""
+  echo "resume: PROJECT_ID=\"$PROJECT_ID\" CASE_PROFILE=\"$CASE_PROFILE\" RESUME_PROJECT=1 MINIMUM_SECONDS=0 bash \"$REPO_ROOT/scripts/run_long_horizon_real_api.sh\""
 
   result_exit_code=$original_exit_code
   if (( CLI_EXIT_CODE != 0 || oracle_exit_code != 0 || summary_exit_code != 0 || ELAPSED_SECONDS < MINIMUM_SECONDS )); then

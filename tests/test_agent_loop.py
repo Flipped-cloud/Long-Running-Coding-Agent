@@ -155,6 +155,40 @@ def test_generated_test_prompt_is_pinned_only_when_enabled_and_survives_reset(tm
     assert "Generated-test verification is enabled" in reset_text
     assert "Final protocol checklist" in reset_text
 
+    persisted = build_task_session_prompt(
+        state,
+        task,
+        cfg,
+        generated_test_state={
+            "registered_candidates": 1,
+            "valid_candidates": 0,
+            "registration_attempts": 0,
+            "completion_requests": 0,
+        },
+    )
+    assert "already persisted but is not yet valid" in persisted
+    assert "Do not create or rewrite another test" in persisted
+
+    validated = build_task_session_prompt(
+        state,
+        task,
+        cfg,
+        generated_test_state={
+            "registered_candidates": 1,
+            "valid_candidates": 1,
+            "registration_attempts": 0,
+            "completion_requests": 0,
+        },
+    )
+    assert "valid generated-test candidate is already persisted" in validated
+    assert "Do not create another generated test" in validated
+
+    cfg.verification.generated_tests.require_candidate_before_completion = False
+    optional = build_task_session_prompt(state, task, cfg)
+    assert "available but is not required" in optional
+    assert "Before requesting task completion, you must" not in optional
+    assert "Final protocol checklist" not in optional
+
 
 def test_generated_test_reminder_uses_schedule_and_stops_after_candidate(tmp_path: Path) -> None:
     repo = tmp_path / "repo"

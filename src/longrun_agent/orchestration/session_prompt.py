@@ -13,6 +13,7 @@ def build_task_context_seed(
     knowledge_context: str | None = None,
     knowledge_retrieval_id: str | None = None,
     config: AppConfig | None = None,
+    generated_test_state: dict[str, int] | None = None,
 ) -> TaskContextSeed:
     dependency_summaries = []
     for dependency_id in task.dependencies:
@@ -38,13 +39,19 @@ def build_task_context_seed(
         latest_handoff_id=task.latest_context_handoff_id,
         knowledge_context=knowledge_context,
         knowledge_retrieval_id=knowledge_retrieval_id,
-        pinned_protocol=_generated_test_protocol(config),
-        final_protocol_reminders=_generated_test_final_checklist(config),
+        pinned_protocol=_generated_test_protocol(config, generated_test_state),
+        final_protocol_reminders=_generated_test_final_checklist(config, generated_test_state),
     )
 
 
-def build_task_session_prompt(state: ProjectState, task: TaskNode, config: AppConfig | None = None) -> str:
-    seed = build_task_context_seed(state, task, config=config)
+def build_task_session_prompt(
+    state: ProjectState,
+    task: TaskNode,
+    config: AppConfig | None = None,
+    *,
+    generated_test_state: dict[str, int] | None = None,
+) -> str:
+    seed = build_task_context_seed(state, task, config=config, generated_test_state=generated_test_state)
     repeat = config.context.repeat_task_anchor_at_end if config else True
     return "\n\n".join([render_task_anchor(seed), render_current_instruction(seed, repeat_anchor=repeat)])
 
@@ -56,9 +63,27 @@ def _short_note(note: str) -> str:
     return normalized[:200] + "... [truncated; full note available in project events]"
 
 
-def _generated_test_protocol(config: AppConfig | None) -> list[str]:
+def _generated_test_protocol(config: AppConfig | None, state: dict[str, int] | None = None) -> list[str]:
     if config is None or config.verification.mode != "contract" or not config.verification.generated_tests.enabled:
         return []
+    if not config.verification.generated_tests.require_candidate_before_completion:
+        return [
+            "Generated-test verification is available but is not required for task completion.",
+            "Use register_test_candidate when a focused issue-reproduction test provides useful evidence.",
+            "A generated test does not replace the frozen verification contract.",
+        ]
+    if state and state["valid_candidates"]:
+        return [
+            "A valid generated-test candidate is already persisted for this task lineage.",
+            "Do not create another generated test; finish the implementation and regression checks, then request completion.",
+            "A generated test does not replace the frozen verification contract.",
+        ]
+    if state and state["registered_candidates"]:
+        return [
+            "A generated-test candidate is already persisted but is not yet valid.",
+            "Do not create or rewrite another test. Fix the implementation, rerun the existing test, then register it once more to record F2P.",
+            "A generated test does not replace the frozen verification contract.",
+        ]
     return [
         "Generated-test verification is enabled.",
         "Before requesting task completion, you must:",
@@ -71,14 +96,32 @@ def _generated_test_protocol(config: AppConfig | None) -> list[str]:
         "7. Run the relevant regression tests.",
         "8. Call request_task_completion.",
         "Writing or running a test without calling register_test_candidate does not satisfy this workflow.",
+        "After registration, do not create another test merely because the context was reset; follow the registration result.",
         "register_test_candidate is not a completion signal.",
         "A generated test does not replace the frozen verification contract.",
     ]
 
 
-def _generated_test_final_checklist(config: AppConfig | None) -> list[str]:
-    if config is None or config.verification.mode != "contract" or not config.verification.generated_tests.enabled:
+def _generated_test_final_checklist(config: AppConfig | None, state: dict[str, int] | None = None) -> list[str]:
+    if (
+        config is None
+        or config.verification.mode != "contract"
+        or not config.verification.generated_tests.enabled
+        or not config.verification.generated_tests.require_candidate_before_completion
+    ):
         return []
+    if state and state["valid_candidates"]:
+        return [
+            "The persisted generated-test requirement is satisfied.",
+            "Run regression tests, then call request_task_completion.",
+            "The frozen verification contract remains authoritative.",
+        ]
+    if state and state["registered_candidates"]:
+        return [
+            "Fix the implementation against the existing test and re-register it once to record F2P.",
+            "Run regression tests, then call request_task_completion.",
+            "The frozen verification contract remains authoritative.",
+        ]
     return [
         "Create and run a focused issue-reproduction test.",
         "Call register_test_candidate and inspect its validation result.",

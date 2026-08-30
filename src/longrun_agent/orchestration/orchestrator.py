@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 import uuid
@@ -122,10 +123,20 @@ class ProjectOrchestrator:
         if state.status in {ProjectStatus.SESSION_LIMIT_REACHED, ProjectStatus.TIME_LIMIT_REACHED, ProjectStatus.FAILED}:
             state.status = ProjectStatus.ACTIVE
             state.updated_at = utc_now()
+            force_decomposition: list[TaskNode] = []
             for task in state.tasks:
-                if task.status == TaskStatus.FAILED and len(task.session_ids) < self.config.planning.execution.max_sessions_per_task:
+                if task.status != TaskStatus.FAILED:
+                    continue
+                if self._no_progress_decomposition_required(task):
+                    task.status = TaskStatus.IN_PROGRESS
+                    task.updated_at = utc_now()
+                    state.active_task_id = task.id
+                    force_decomposition.append(task)
+                elif len(task.session_ids) < self.config.planning.execution.max_sessions_per_task:
                     task.status = TaskStatus.READY
                     task.updated_at = utc_now()
+            for task in force_decomposition:
+                self._trigger_decomposition(state, task, "consecutive no-progress session limit reached", force_decompose=True)
         self._logger(state).log("project_resumed", project_id=state.project_id, plan_version=state.plan_version)
         return self.run_project(state)
 
@@ -307,8 +318,24 @@ class ProjectOrchestrator:
     def _persist_test_candidates(self, state: ProjectState, channel: TaskControlChannel) -> None:
         if self.verification_store is None:
             return
-        for candidate in channel.test_candidates:
+        for candidate in channel.new_test_candidates:
             self.verification_store.save_test_candidate(candidate)
+
+    def _existing_test_candidates(self, state: ProjectState, task: TaskNode) -> list[TestCandidate]:
+        if self.verification_store is None:
+            return []
+        task_ids = {task.id}
+        parent_id = task.parent_id
+        while parent_id is not None:
+            task_ids.add(parent_id)
+            parent = state.task_by_id(parent_id)
+            parent_id = parent.parent_id
+        candidates = [
+            candidate
+            for task_id in task_ids
+            for candidate in self.verification_store.list_test_candidates(task_id=task_id)
+        ]
+        return sorted(candidates, key=lambda candidate: candidate.created_at)
 
     def _validate_registered_test_candidate(self, state: ProjectState, candidate: TestCandidate) -> TestCandidate:
         assert self.verification_store is not None
@@ -431,6 +458,7 @@ class ProjectOrchestrator:
                 minimum_valid_candidates=self.config.verification.generated_tests.minimum_valid_candidates,
                 max_registration_attempts=self.config.verification.generated_tests.max_registration_attempts,
                 candidate_validator=lambda candidate: self._validate_registered_test_candidate(state, candidate),
+                existing_test_candidates=self._existing_test_candidates(state, task),
             )
             starting_task_status = task.status.value
             result, trace, knowledge_channel, knowledge_bundle = self._run_task_session(state, task, channel, session_id, project_deadline)
@@ -553,6 +581,7 @@ class ProjectOrchestrator:
             knowledge_context=knowledge_context,
             knowledge_retrieval_id=knowledge_bundle.retrieval_id if knowledge_context else None,
             config=self.config,
+            generated_test_state=channel.workflow_state(),
         )
         context_manager = ContextLifecycleManager(
             self.config.context,
@@ -591,7 +620,7 @@ class ProjectOrchestrator:
         loop.router = router_with_channel
         result = loop.run_with_controls(
             self.config.workspace.root,
-            build_task_session_prompt(state, task, self.config),
+            build_task_session_prompt(state, task, self.config, generated_test_state=channel.workflow_state()),
             deadline_monotonic=project_deadline,
             stop_condition=lambda: channel.terminal_signal is not None,
             require_external_terminal=True,
@@ -882,7 +911,7 @@ class ProjectOrchestrator:
             )
         task.files_touched = dedupe_preserving_order([*task.files_touched, *trace.changed_files])
         task.read_files = dedupe_preserving_order([*task.read_files, *trace.read_files])
-        substantive_progress_count = sum(bool(signal.files_touched) for signal in channel.progress_signals)
+        substantive_progress_count = self._substantive_progress_count(channel, trace)
         no_progress = trace.no_progress(
             progress_count=substantive_progress_count,
             terminal_signal=channel.terminal_signal,
@@ -941,7 +970,9 @@ class ProjectOrchestrator:
             if candidate is not None:
                 self._internal_complete_task(state, task, session_id, candidate)
                 return
-            if (
+            if self._no_progress_decomposition_required(task):
+                self._trigger_decomposition(state, task, "consecutive no-progress session limit reached", force_decompose=True)
+            elif (
                 self.config.planning.mode in {"adaptive", "adaptive_search"}
                 and task.attempts >= self.config.planning.execution.attempts_before_decomposition
             ):
@@ -1076,14 +1107,34 @@ class ProjectOrchestrator:
             payload=candidate.model_dump(mode="json"),
         )
 
-    def _trigger_decomposition(self, state: ProjectState, task: TaskNode, reason: str) -> None:
+    def _no_progress_decomposition_required(self, task: TaskNode) -> bool:
+        return (
+            self.config.planning.mode in {"adaptive", "adaptive_search"}
+            and task.depth < self.config.planning.decomposition.max_depth
+            and task.consecutive_no_progress_sessions >= self.config.planning.execution.max_no_progress_sessions
+        )
+
+    @staticmethod
+    def _substantive_progress_count(channel: TaskControlChannel, trace: SessionTrace) -> int:
+        changed = set(trace.changed_files)
+        return sum(bool(changed.intersection(signal.files_touched)) for signal in channel.progress_signals)
+
+    def _trigger_decomposition(self, state: ProjectState, task: TaskNode, reason: str, *, force_decompose: bool = False) -> None:
         if self.config.planning.mode == "static":
             self._transition(state, task.id, TaskStatus.BLOCKED, reason=reason, source="orchestrator")
             return
         selected_candidate_id = None
         candidate_ids: list[str] = []
         selected_decompose_children: list[TaskNode] | None = None
-        if self.config.planning.mode == "adaptive_search" and self.config.planning.bounded_search.enabled:
+        if force_decompose:
+            self._logger(state).log(
+                "no_progress_decomposition_forced",
+                project_id=state.project_id,
+                task_id=task.id,
+                plan_version=state.plan_version,
+                reason=reason,
+            )
+        if not force_decompose and self.config.planning.mode == "adaptive_search" and self.config.planning.bounded_search.enabled:
             candidates = RecoveryCandidateGenerator(self.model, self.config.planning.bounded_search).generate(task, reason)
             self._logger(state).log(
                 "recovery_candidates_generated",
@@ -1228,7 +1279,10 @@ class ProjectOrchestrator:
             "estimated_tokens_removed": result.estimated_tokens_removed,
             "context_budget_exhausted": result.context_budget_exhausted,
             "latest_context_handoff_id": result.latest_context_handoff_id,
-            "no_progress": trace.no_progress(progress_count=len(channel.progress_signals), terminal_signal=terminal),
+            "no_progress": trace.no_progress(
+                progress_count=self._substantive_progress_count(channel, trace),
+                terminal_signal=terminal,
+            ),
             "handoff_summary": task.last_handoff_summary
             if terminal is None
             and result.status
@@ -1578,7 +1632,8 @@ class ProjectOrchestrator:
         )
 
     def _logger(self, state: ProjectState) -> ProjectLogger:
-        return ProjectLogger(self.store.events_path(state.project_id))
+        api_key = os.environ.get(self.config.model.api_key_env, "")
+        return ProjectLogger(self.store.events_path(state.project_id), (api_key,) if api_key else ())
 
 
 def _duration_seconds(started_at: str, finished_at: str) -> float:

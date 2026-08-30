@@ -13,11 +13,15 @@ from longrun_agent.config import (
     ToolsConfig,
     WorkspaceConfig,
 )
+from longrun_agent.control.channel import ControlSignal, ControlSignalType, TaskControlChannel
 from longrun_agent.model.fake import FakeModelProvider
 from longrun_agent.orchestration.orchestrator import ProjectOrchestrator
+from longrun_agent.orchestration.session_trace import SessionTrace
 from longrun_agent.protocol import FinalAnswer, ModelResponse, ToolCall
-from longrun_agent.state.schema import ProjectStatus, TaskStatus
+from longrun_agent.state.schema import ProjectState, ProjectStatus, TaskNode, TaskStatus
 from longrun_agent.state.store import ProjectStateStore
+from longrun_agent.verification.schema import TestCandidate as CandidateSchema
+from longrun_agent.verification.store import VerificationStore
 
 
 def config(tmp_path: Path, mode: str = "adaptive", max_sessions: int = 10) -> AppConfig:
@@ -79,6 +83,107 @@ def completion(call_id: str):
 
 def final():
     return ModelResponse(final_answer=FinalAnswer(content="session done"))
+
+
+def test_persisted_generated_test_is_inherited_by_decomposition_child(tmp_path: Path) -> None:
+    cfg = config(tmp_path)
+    orchestrator = ProjectOrchestrator(cfg, FakeModelProvider([]), project_id="project")
+    orchestrator.verification_store = VerificationStore(
+        tmp_path / "verification",
+        "project",
+        workspace_root=cfg.workspace.root,
+    )
+    parent = TaskNode(
+        id="parent",
+        key="parent",
+        title="parent",
+        objective="fix",
+        acceptance_criteria=["done"],
+    )
+    child = TaskNode(
+        id="child",
+        key="child",
+        title="child",
+        objective="finish fix",
+        acceptance_criteria=["done"],
+        parent_id=parent.id,
+        depth=1,
+    )
+    candidate = CandidateSchema(
+        task_id=parent.id,
+        session_id="session-1",
+        paths=["agent_tests/test_issue.py"],
+        command_argv=["python", "agent_tests/test_issue.py"],
+        issue_behavior="reproduce issue",
+    )
+    orchestrator.verification_store.save_test_candidate(candidate)
+    state = ProjectState(project_id="project", objective="ship", tasks=[parent, child])
+
+    assert orchestrator._existing_test_candidates(state, child) == [candidate]
+
+
+def test_no_progress_does_not_force_decomposition_at_depth_limit(tmp_path: Path) -> None:
+    cfg = config(tmp_path)
+    cfg.planning.decomposition.max_depth = 1
+    orchestrator = ProjectOrchestrator(cfg, FakeModelProvider([]))
+    task = TaskNode(
+        id="child",
+        key="child",
+        title="child",
+        objective="finish fix",
+        acceptance_criteria=["done"],
+        parent_id="parent",
+        depth=1,
+        consecutive_no_progress_sessions=cfg.planning.execution.max_no_progress_sessions,
+    )
+
+    assert not orchestrator._no_progress_decomposition_required(task)
+
+
+def test_reported_files_are_not_progress_without_an_observed_write(tmp_path: Path) -> None:
+    cfg = config(tmp_path)
+    orchestrator = ProjectOrchestrator(cfg, FakeModelProvider([]))
+    channel = TaskControlChannel()
+    channel.record(
+        ControlSignal(
+            type=ControlSignalType.PROGRESS,
+            summary="planned edit",
+            files_touched=["workflow_service/service.py"],
+        )
+    )
+
+    assert orchestrator._substantive_progress_count(channel, SessionTrace()) == 0
+
+
+def decomposition(parent_task_id: str):
+    return ModelResponse(
+        tool_calls=[
+            ToolCall(
+                id="decompose",
+                name="submit_decomposition",
+                arguments={
+                    "parent_task_id": parent_task_id,
+                    "reason": "split stalled work",
+                    "children": [
+                        {
+                            "key": "A",
+                            "title": "A",
+                            "objective": "specific child A",
+                            "acceptance_criteria": ["done"],
+                            "depends_on_child_keys": [],
+                        },
+                        {
+                            "key": "B",
+                            "title": "B",
+                            "objective": "specific child B",
+                            "acceptance_criteria": ["done"],
+                            "depends_on_child_keys": ["A"],
+                        },
+                    ],
+                },
+            )
+        ]
+    )
 
 
 def test_project_orchestrator_adaptive_decomposition_integration(tmp_path: Path):
@@ -148,6 +253,54 @@ def test_project_orchestrator_adaptive_decomposition_integration(tmp_path: Path)
         "parent_task_aggregated",
         "project_candidate_complete",
     }.issubset(event_types)
+
+
+def test_consecutive_no_progress_forces_decomposition_instead_of_another_retry(tmp_path: Path):
+    cfg = config(tmp_path, mode="adaptive_search", max_sessions=5)
+    cfg.agent.max_steps = 1
+    cfg.planning.execution.max_no_progress_sessions = 2
+    responses = [
+        submit_plan(),
+        ModelResponse(tool_calls=[ToolCall(id="r1", name="read_file", arguments={"path": "missing.py"})]),
+        ModelResponse(
+            tool_calls=[
+                ToolCall(
+                    id="recovery",
+                    name="submit_recovery_candidates",
+                    arguments={
+                        "task_id": "project-no-progress:T1",
+                        "candidates": [
+                            {
+                                "id": "retry",
+                                "kind": "retry_with_guidance",
+                                "description": "try once more",
+                                "rationale": "recover",
+                                "expected_benefit": "progress",
+                                "risks": "low",
+                                "testability": "next session",
+                                "child_tasks": [],
+                            }
+                        ],
+                    },
+                )
+            ]
+        ),
+        ModelResponse(tool_calls=[ToolCall(id="r2", name="read_file", arguments={"path": "missing.py"})]),
+        decomposition("project-no-progress:T1"),
+        completion("a"),
+        completion("b"),
+        completion("t2"),
+    ]
+
+    outcome = ProjectOrchestrator(cfg, FakeModelProvider(responses), project_id="project-no-progress").start("ship")
+
+    store = ProjectStateStore(cfg.state.root, workspace_root=cfg.workspace.root)
+    state = store.load("project-no-progress")
+    events = store.read_events("project-no-progress")
+    assert outcome.status == ProjectStatus.CANDIDATE_COMPLETE.value
+    assert state.task_by_id("project-no-progress:T1").status == TaskStatus.CANDIDATE_COMPLETE
+    assert sum(event["event_type"] == "recovery_candidates_generated" for event in events) == 1
+    assert any(event["event_type"] == "no_progress_decomposition_forced" for event in events)
 
 
 def test_project_orchestrator_final_answer_without_control_signal_does_not_complete(tmp_path: Path):

@@ -33,7 +33,14 @@ class AsNeededDecomposer:
 
     def decompose(self, parent: TaskNode, reason: str) -> list[TaskNode]:
         messages = [
-            {"role": "system", "content": DECOMPOSER_PROMPT},
+            {
+                "role": "system",
+                "content": (
+                    f"{DECOMPOSER_PROMPT}\n"
+                    f"Return between {self.config.min_children} and {self.config.max_children} child tasks. "
+                    f"The resulting depth must not exceed {self.config.max_depth}."
+                ),
+            },
             {"role": "user", "content": f"Parent task {parent.id}: {parent.objective}\nReason: {reason}"},
         ]
         last_error: Exception | None = None

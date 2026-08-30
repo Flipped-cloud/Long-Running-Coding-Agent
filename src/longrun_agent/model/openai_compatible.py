@@ -27,8 +27,8 @@ def _is_tool_choice_unsupported(exc: BaseException) -> bool:
     )
 
 
-def _deepseek_v4_extra_body(model_name: str, tool_choice: dict[str, Any] | str) -> dict[str, Any] | None:
-    if isinstance(tool_choice, dict) and "deepseek-v4" in model_name.lower():
+def _deepseek_v4_extra_body(model_name: str) -> dict[str, Any] | None:
+    if "deepseek-v4" in model_name.lower():
         return {"thinking": {"type": "disabled"}}
     return None
 
@@ -70,7 +70,7 @@ class OpenAICompatibleProvider(ModelProvider):
                 "temperature": self.config.temperature,
                 "max_tokens": self.config.max_output_tokens,
             }
-            extra_body = _deepseek_v4_extra_body(self.config.model_name, resolved_tool_choice)
+            extra_body = _deepseek_v4_extra_body(self.config.model_name)
             if extra_body is not None:
                 kwargs["extra_body"] = extra_body
             return self.client.chat.completions.create(**kwargs)

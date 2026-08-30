@@ -1,0 +1,45 @@
+contract_id: comprehensive-agent-qualification
+contract_version: 1
+project_id: __PROJECT_ID__
+scope: project
+source: file
+hidden_assets_root: ../long_horizon/hidden_assets
+checks:
+  - check_id: public-regression-suite
+    title: Public workflow regression suite
+    kind: resolution
+    visibility: public
+    argv: [python, -m, pytest, -q, tests]
+    cwd: .
+    timeout_seconds: 180
+    required: true
+  - check_id: private-integration-oracle
+    title: Private cross-layer workflow oracle
+    kind: resolution
+    visibility: hidden
+    argv: [python, -m, pytest, -q, hidden_tests]
+    cwd: .
+    timeout_seconds: 180
+    required: true
+integrity_rules:
+  protected_paths: [tests/*.py, pyproject.toml, TASK.md]
+  trusted_test_patterns: [tests/*.py]
+  allowed_change_patterns: [workflow_service/*.py, agent_tests/*.py, README.md]
+  allowed_test_directories: [agent_tests]
+  required_artifacts:
+    - workflow_service/models.py
+    - workflow_service/serialization.py
+    - workflow_service/storage.py
+    - workflow_service/graph.py
+    - workflow_service/retry.py
+    - workflow_service/audit.py
+    - workflow_service/metrics.py
+    - workflow_service/service.py
+    - workflow_service/cli.py
+  hidden_asset_markers: [hidden_tests/*]
+  max_deleted_files: 0
+  allow_project_config_changes: false
+generated_test_policy:
+  enabled: true
+  can_be_required: false
+  max_candidates_per_task: 2

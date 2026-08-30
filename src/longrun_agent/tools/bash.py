@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 from longrun_agent.protocol import ErrorType, ToolResult
+from longrun_agent.telemetry.logger import redact_sensitive_values
 from longrun_agent.tools.arguments import normalize_command_argv, render_command
 from longrun_agent.tools.base import BaseTool, ToolContext
 from longrun_agent.tools.sandbox import SANDBOX_RUNTIME_UNAVAILABLE, EvaluationSandboxRuntimeUnavailable, EvaluationSandboxUnavailable
@@ -102,10 +103,16 @@ def _display_command(arguments: BashArgs) -> str:
 
 
 def _verification_kind(command: str) -> str | None:
-    lowered = command.lower()
-    if "pytest" in lowered and "--collect-only" not in lowered and not re.search(r"(^|\s)--co(\s|$)", lowered):
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return None
+    lowered = [item.lower() for item in argv]
+    executable = Path(lowered[0]).name if lowered else ""
+    is_pytest = executable.startswith("pytest") or len(lowered) >= 3 and lowered[1:3] == ["-m", "pytest"]
+    if is_pytest and "--collect-only" not in lowered and "--co" not in lowered:
         return "pytest"
-    if "task_service.cli" in lowered or " validate" in f" {lowered} ":
+    if "task_service.cli" in lowered or "validate" in lowered:
         return "acceptance"
     return None
 
@@ -286,9 +293,12 @@ class BashTool(BaseTool):
             duration = time.monotonic() - started
             stdout = stdout or ""
             stderr = stderr or ""
-            artifact = context.tool_outputs_dir / f"tool-output-{call_id}.txt"
+            stdout = redact_sensitive_values(stdout, context.sensitive_values)
+            stderr = redact_sensitive_values(stderr, context.sensitive_values)
+            artifact = context.tool_outputs_dir / f"tool-output-{call_id}.txt" if context.save_full_tool_outputs else None
             full_output = f"STDOUT:\n{stdout}\nSTDERR:\n{stderr}"
-            artifact.write_text(full_output, encoding="utf-8")
+            if artifact is not None:
+                artifact.write_text(full_output, encoding="utf-8")
             stream_limit = max(50, context.config.bash.max_output_chars // 2)
             stdout_output, stdout_truncated = _truncate_stream("STDOUT", stdout, stream_limit)
             stderr_output, stderr_truncated = _truncate_stream("STDERR", stderr, stream_limit)
@@ -315,12 +325,12 @@ class BashTool(BaseTool):
                         "stdout_chars": len(stdout),
                         "stderr_chars": len(stderr),
                         "truncated": truncated,
-                        "output_artifact": str(artifact),
-                        "stdout_artifact": str(artifact),
-                        "combined_artifact": str(artifact),
+                        "output_artifact": str(artifact) if artifact else None,
+                        "stdout_artifact": str(artifact) if artifact else None,
+                        "combined_artifact": str(artifact) if artifact else None,
                         "platform": sys.platform,
                     },
-                    artifact_path=str(artifact),
+                    artifact_path=str(artifact) if artifact else None,
                     error_type=infrastructure_failure.error_type,
                     error_message=infrastructure_failure.public_message,
                     retryable=infrastructure_failure.retryable,
@@ -344,12 +354,12 @@ class BashTool(BaseTool):
                     "stdout_chars": len(stdout),
                     "stderr_chars": len(stderr),
                     "truncated": truncated,
-                    "output_artifact": str(artifact),
-                    "stdout_artifact": str(artifact),
-                    "combined_artifact": str(artifact),
+                    "output_artifact": str(artifact) if artifact else None,
+                    "stdout_artifact": str(artifact) if artifact else None,
+                    "combined_artifact": str(artifact) if artifact else None,
                     "platform": sys.platform,
                 },
-                artifact_path=str(artifact),
+                artifact_path=str(artifact) if artifact else None,
                 error_type=ErrorType.TOOL if timed_out else None,
                 error_message="command timed out" if timed_out else None,
             )

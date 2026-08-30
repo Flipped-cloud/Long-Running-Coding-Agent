@@ -11,6 +11,7 @@ def context(
     tmp_path: Path,
     max_output_chars: int = 12000,
     bash_timeout_seconds: int = 2,
+    save_full_tool_outputs: bool = True,
 ) -> ToolContext:
     artifacts = tmp_path / ".runs" / "r1" / "artifacts"
     artifacts.mkdir(parents=True)
@@ -22,6 +23,7 @@ def context(
             max_output_chars=max_output_chars,
             bash_timeout_seconds=bash_timeout_seconds,
         ),
+        save_full_tool_outputs=save_full_tool_outputs,
     )
 
 
@@ -30,6 +32,7 @@ def execute(
     args: dict,
     max_output_chars: int = 12000,
     bash_timeout_seconds: int = 2,
+    save_full_tool_outputs: bool = True,
 ):
     return ToolRouter([BashTool()]).execute(
         AgentToolCall(
@@ -41,6 +44,7 @@ def execute(
             tmp_path,
             max_output_chars,
             bash_timeout_seconds,
+            save_full_tool_outputs,
         ),
     )
 
@@ -76,6 +80,28 @@ def test_bash_output_truncation_creates_artifact(tmp_path: Path):
     assert result.success
     assert "truncated" in result.output
     assert Path(result.metadata["output_artifact"]).exists()
+
+
+def test_bash_can_disable_full_output_artifact(tmp_path: Path):
+    result = execute(tmp_path, {"command": "python -c \"print('ok')\""}, save_full_tool_outputs=False)
+
+    assert result.success
+    assert result.artifact_path is None
+    assert result.metadata["output_artifact"] is None
+    assert not list((tmp_path / ".runs" / "r1" / "artifacts").iterdir())
+
+
+def test_bash_does_not_inherit_or_persist_api_key(tmp_path: Path, monkeypatch):
+    secret = "secret-value-from-environment"
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+
+    command = f"import os; print(os.getenv('OPENAI_API_KEY')); print({secret!r})"
+    result = execute(tmp_path, {"argv": ["python", "-c", command]})
+
+    assert result.success
+    assert "None" in result.output
+    assert secret not in result.output
+    assert secret not in Path(result.metadata["output_artifact"]).read_text(encoding="utf-8")
 
 
 def test_bash_dangerous_command_rejected(tmp_path: Path):

@@ -94,6 +94,14 @@ def deterministic_handoff(
                 source_step=evidence[0].step,
             )
         )
+    referenced_evidence_ids = {
+        *[evidence_id for fact in confirmed for evidence_id in fact.evidence_ids],
+        *[item.evidence_id for item in files.values() if item.evidence_id],
+    }
+    verification_steps = {item.source_step for item in verifications[-5:]}
+    compact_evidence = [
+        item for item in evidence if item.evidence_id in referenced_evidence_ids or item.type == "bash" and item.step in verification_steps
+    ]
     return HandoffRecord(
         handoff_id=f"ctx-{uuid.uuid4()}",
         project_id=project_id,
@@ -115,7 +123,7 @@ def deterministic_handoff(
                 )
             )
         ],
-        evidence_references=evidence,
+        evidence_references=compact_evidence,
         stale_items_excluded=stale_steps,
         source_steps=source_steps,
         generator="deterministic",

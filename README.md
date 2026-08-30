@@ -31,7 +31,7 @@ flowchart TD
 - OpenAI-compatible provider using native tool calling.
 - Fake provider for deterministic tests and demos.
 - Structured protocol: `ToolCall`, `FinalAnswer`, `ToolResult`, `ModelResponse`, `RunResult`.
-- Workspace-restricted `read_file`, `write_file`, and `bash`.
+- Workspace-restricted `read_file` and `write_file`, plus workspace-rooted local `bash` execution.
 - Linux/WSL2 Bubblewrap isolation for evaluation bash execution and hidden-contract protection.
 - JSONL telemetry under `.runs/<run_id>/`.
 - CLI entry points for running the agent and listing tools.
@@ -208,6 +208,14 @@ PROJECT_ID="assessment-$(date -u +%Y%m%dT%H%M%SZ)" MINIMUM_SECONDS=0 bash script
 ```
 
 See `evals/long_horizon/VIDEO_DEMO.md` for Ubuntu setup, resume instructions, output locations, and an edited-video shot list.
+
+For a broader qualification run, the comprehensive profile adds mandatory Agent-generated F2P tests and adaptive recovery search while retaining the persisted DAG, structured handoffs, knowledge lifecycle, frozen public/hidden contract, integrity checks, resume, and independent Oracle. Its expected runtime is also about 30 minutes; the 55-minute project budget and 70-minute watchdog are safety limits:
+
+```bash
+PROJECT_ID="comprehensive-$(date -u +%Y%m%dT%H%M%SZ)" CASE_PROFILE=comprehensive bash scripts/run_long_horizon_real_api.sh
+```
+
+See `evals/comprehensive/README.md` for coverage and resume instructions.
 
 ## Project CLI
 
@@ -438,13 +446,16 @@ Each run creates:
 
 Every JSONL line is a standalone event with step, event type, model name, action type, tool call id, success flag, summary, token counts, exit code, artifact path, and error fields where applicable.
 
+Sensitive fields and configured secret environment values are redacted before events, saved prompts, run summaries, and Bash output artifacts are persisted. Set `telemetry.save_prompts: false` or `telemetry.save_full_tool_outputs: false` when those artifacts are unnecessary.
+
 ## Safety Limits
 
 - All file paths are resolved through `Path.resolve()` and checked against the workspace root with `os.path.commonpath`.
 - Empty paths, parent traversal, absolute paths outside the workspace, and symlink escapes are rejected.
-- `bash` runs with a fixed workspace cwd, captures stdout/stderr, applies timeouts, and saves full output artifacts.
+- Ordinary `longrun-agent run` mode starts `bash` with a workspace cwd, rejects explicit path escapes, disables shell syntax by default, and passes only a small runtime environment allowlist, so API keys are not inherited. It is not an OS-level filesystem sandbox: invoked programs still have the current user's host permissions. Use ordinary mode only with trusted local code.
+- Bash captures stdout/stderr, applies timeouts, and saves redacted full-output artifacts only when `telemetry.save_full_tool_outputs` is enabled.
 - In Linux/WSL2 evaluation isolation, `bash` can run through Bubblewrap with denied roots and private marker filtering.
-- Obvious destructive commands such as `rm -rf /`, `shutdown`, `reboot`, `mkfs`, and destructive absolute-path operations are rejected.
+- A small destructive-command guard rejects obvious host-wide operations, but it is not a security sandbox or a comprehensive command blacklist.
 - Non-zero command exit codes are environment observations, not provider failures.
 
 ## Tests

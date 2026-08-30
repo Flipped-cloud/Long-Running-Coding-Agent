@@ -7,6 +7,16 @@ from longrun_agent.protocol import ModelResponse, ToolCall
 from longrun_agent.state.schema import TaskNode
 
 
+class CapturingProvider(FakeModelProvider):
+    def __init__(self, responses):
+        super().__init__(responses)
+        self.messages = []
+
+    def generate(self, messages, tools):
+        self.messages.append(messages)
+        return super().generate(messages, tools)
+
+
 def child(key, deps=None):
     return {"key": key, "title": key, "objective": f"specific {key}", "acceptance_criteria": ["done"], "depends_on_child_keys": deps or []}
 
@@ -23,12 +33,14 @@ def decomposition_call(parent_id, children):
 
 def test_decomposer_success():
     parent = TaskNode(id="t1", key="T1", title="T1", objective="parent", acceptance_criteria=["done"])
+    provider = CapturingProvider([decomposition_call("t1", [child("C1"), child("C2", ["C1"])])])
     decomposer = AsNeededDecomposer(
-        FakeModelProvider([decomposition_call("t1", [child("C1"), child("C2", ["C1"])])]), DecompositionConfig()
+        provider, DecompositionConfig(min_children=2, max_children=4, max_depth=3)
     )
     children = decomposer.decompose(parent, "blocked")
     assert [task.parent_id for task in children] == ["t1", "t1"]
     assert children[1].dependencies == ["t1:C1"]
+    assert "between 2 and 4 child tasks" in provider.messages[0][0]["content"]
 
 
 def test_decomposer_rejects_child_cycle():

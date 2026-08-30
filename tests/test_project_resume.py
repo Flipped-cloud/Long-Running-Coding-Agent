@@ -6,7 +6,7 @@ from longrun_agent.orchestration.orchestrator import ProjectOrchestrator
 from longrun_agent.protocol import ModelResponse, ToolCall
 from longrun_agent.state.schema import ProjectStatus, TaskStatus
 from longrun_agent.state.store import ProjectStateStore
-from tests.test_project_orchestrator import completion, config, submit_plan
+from tests.test_project_orchestrator import completion, config, decomposition, submit_plan
 
 
 def test_project_resume_continues_without_regenerating_plan_or_repeating_completed_tasks(tmp_path: Path):
@@ -60,3 +60,39 @@ def test_project_resume_continues_without_regenerating_plan_or_repeating_complet
     assert all(task.status == TaskStatus.CANDIDATE_COMPLETE for task in resumed.tasks)
     metrics = json.loads(store.metrics_path("resume-1").read_text(encoding="utf-8"))
     assert metrics["project_sessions"] == 2
+
+
+def test_resume_immediately_decomposes_failed_task_at_no_progress_limit(tmp_path: Path):
+    first_cfg = config(tmp_path, mode="static", max_sessions=1)
+    first_cfg.agent.max_steps = 1
+    ProjectOrchestrator(
+        first_cfg,
+        FakeModelProvider(
+            [
+                submit_plan(),
+                ModelResponse(tool_calls=[ToolCall(id="r1", name="read_file", arguments={"path": "missing.py"})]),
+            ]
+        ),
+        project_id="resume-stalled",
+    ).start("ship")
+    store = ProjectStateStore(first_cfg.state.root, workspace_root=first_cfg.workspace.root)
+    state = store.load("resume-stalled")
+    stalled = state.task_by_id("resume-stalled:T1")
+    state.status = ProjectStatus.FAILED
+    stalled.status = TaskStatus.FAILED
+    stalled.consecutive_no_progress_sessions = 2
+    store.save(state)
+
+    resume_cfg = config(tmp_path, mode="adaptive_search", max_sessions=5)
+    resume_cfg.agent.max_steps = 1
+    resume_cfg.planning.execution.max_no_progress_sessions = 2
+    outcome = ProjectOrchestrator(
+        resume_cfg,
+        FakeModelProvider([decomposition("resume-stalled:T1"), completion("a"), completion("b"), completion("t2")]),
+    ).resume("resume-stalled")
+
+    resumed = store.load("resume-stalled")
+    events = store.read_events("resume-stalled")
+    assert outcome.status == ProjectStatus.CANDIDATE_COMPLETE.value
+    assert resumed.task_by_id("resume-stalled:T1").status == TaskStatus.CANDIDATE_COMPLETE
+    assert any(event["event_type"] == "no_progress_decomposition_forced" for event in events)

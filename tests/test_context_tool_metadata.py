@@ -57,3 +57,13 @@ def test_pytest_collect_only_has_no_verification_kind(tmp_path: Path):
     assert result.success
     assert result.metadata["exit_code"] == 0
     assert result.metadata["verification_kind"] is None
+
+
+def test_pytest_cache_path_does_not_make_file_listing_verification(tmp_path: Path):
+    result = ToolRouter([BashTool()]).execute(
+        ToolCall(id="b1", name="bash", arguments={"argv": ["find", ".", "-not", "-path", "./.pytest_cache/*"]}),
+        ToolContext(tmp_path, config=ToolsConfig()),
+    )
+
+    assert result.success
+    assert result.metadata["verification_kind"] is None

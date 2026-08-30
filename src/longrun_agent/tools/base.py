@@ -23,6 +23,8 @@ class ToolContext:
         knowledge_channel: Any | None = None,
         workspace_policy: WorkspaceAccessPolicy | None = None,
         subprocess_sandbox: SubprocessSandbox | None = None,
+        save_full_tool_outputs: bool = True,
+        sensitive_values: tuple[str, ...] = (),
     ):
         artifacts = artifacts_dir or tool_outputs_dir or workspace / ".runs" / "tool_outputs"
         self.workspace = workspace
@@ -33,6 +35,8 @@ class ToolContext:
         self.knowledge_channel = knowledge_channel
         self.workspace_policy = workspace_policy or WorkspaceAccessPolicy.for_workspace(workspace)
         self.subprocess_sandbox = subprocess_sandbox or build_subprocess_sandbox(self.workspace_policy)
+        self.save_full_tool_outputs = save_full_tool_outputs
+        self.sensitive_values = sensitive_values
         self.tool_outputs_dir.mkdir(parents=True, exist_ok=True)
         self.diffs_dir.mkdir(parents=True, exist_ok=True)
 

@@ -199,6 +199,18 @@ def test_generate_disables_deepseek_v4_thinking_for_named_tool_choice(monkeypatc
     assert client.completions.calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
+def test_generate_disables_deepseek_v4_thinking_for_auto_tool_choice(monkeypatch):
+    monkeypatch.setattr(provider_module, "wait_exponential", lambda *args, **kwargs: wait_none())
+    client = FakeClient([response_with_message(text_message("done"))])
+    provider = OpenAICompatibleProvider(deepseek_config(max_api_retries=1), client=client)
+
+    result = provider.generate([], [{"type": "function", "function": {"name": "read_file"}}])
+
+    assert result.final_answer.content == "done"
+    assert client.completions.calls[0]["tool_choice"] == "auto"
+    assert client.completions.calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
 def test_generate_retries_500_then_succeeds(monkeypatch):
     monkeypatch.setattr(provider_module, "wait_exponential", lambda *args, **kwargs: wait_none())
     client = FakeClient([StatusError(500), response_with_message(text_message("done"))])

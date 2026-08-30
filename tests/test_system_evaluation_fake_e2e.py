@@ -196,8 +196,9 @@ def test_enforced_generated_test_workflow_preserves_evidence_after_cleanup(tmp_p
     assert normal.outcome is not None and normal.outcome.test_candidates == 0
     assert enforced.outcome is not None
     assert enforced.outcome.full_resolution
-    assert enforced.outcome.test_candidates == 2
+    assert enforced.outcome.test_candidates == 1
     assert enforced.outcome.well_formed_test_candidates == 1
+    assert enforced.outcome.f2p_tests == 1
     assert enforced.outcome.completion_requests == 1
     assert enforced.outcome.termination_reason.value == "completed"
     assert not enforced.descriptor.trial_dir.joinpath("workspace").exists()

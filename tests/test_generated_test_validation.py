@@ -19,6 +19,7 @@ from longrun_agent.verification.generated_tests import TestCandidateValidator as
 from longrun_agent.verification.generated_tests import register_test_candidate
 from longrun_agent.verification.runner import VerificationRunner
 from longrun_agent.verification.schema import TestTransition as Transition
+from longrun_agent.verification.schema import TestCandidate as CandidateSchema
 from longrun_agent.verification.snapshot import CopySnapshotProvider
 
 
@@ -116,6 +117,84 @@ def test_completion_gate_rejects_missing_candidate_without_changing_task_status(
     assert task.status == TaskStatus.PENDING
 
 
+def test_control_channel_keeps_persisted_candidate_separate_from_new_candidates() -> None:
+    persisted = CandidateSchema(
+        task_id="parent",
+        session_id="session-1",
+        paths=["agent_tests/test_issue.py"],
+        command_argv=[sys.executable, "agent_tests/test_issue.py"],
+        issue_behavior="reproduce issue",
+    )
+    channel = TaskControlChannel(existing_test_candidates=[persisted])
+
+    assert channel.test_candidates == [persisted]
+    assert channel.new_test_candidates == []
+    assert channel.workflow_state()["registered_candidates"] == 1
+
+
+def test_completion_gate_does_not_count_irrelevant_p2p_candidate() -> None:
+    irrelevant = CandidateSchema(
+        task_id="task",
+        session_id="session",
+        paths=["agent_tests/test_issue.py"],
+        command_argv=[sys.executable, "agent_tests/test_issue.py"],
+        issue_behavior="unrelated behavior",
+        valid=True,
+        valid_but_irrelevant=True,
+        transition=Transition.P2P,
+    )
+    channel = TaskControlChannel(
+        existing_test_candidates=[irrelevant],
+        require_test_candidate_before_completion=True,
+    )
+
+    assert channel.valid_test_candidate_count == 0
+    assert channel.generated_test_requirement_error() is not None
+
+
+def test_reregistering_same_candidate_revalidates_without_consuming_another_slot(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("VALUE = 0\n", encoding="utf-8")
+    snapshots = CopySnapshotProvider(workspace, tmp_path / "store")
+    snapshots.create_baseline()
+    (workspace / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (workspace / "test_candidate.py").write_text("import app\nassert app.VALUE == 2\n", encoding="utf-8")
+
+    def validate(candidate):
+        candidate_root, _manifest = snapshots.create_candidate()
+        try:
+            return CandidateValidator(snapshots, VerificationRunner(tmp_path / "artifacts")).validate(candidate, candidate_root)
+        finally:
+            snapshots.cleanup(candidate_root)
+
+    channel = TaskControlChannel(
+        workspace=workspace,
+        task_id="task",
+        session_id="session",
+        max_test_candidates=1,
+        max_registration_attempts=2,
+        candidate_validator=validate,
+    )
+    arguments = {
+        "paths": ["test_candidate.py"],
+        "command_argv": [sys.executable, "test_candidate.py"],
+        "issue_behavior": "VALUE must become two",
+        "expected_failure_reason": "baseline value is zero",
+    }
+
+    first = channel.register_test_candidate(**arguments)
+    assert not first.valid
+
+    (workspace / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
+    second = channel.register_test_candidate(**arguments)
+
+    assert second.valid
+    assert second.transition == Transition.F2P
+    assert second.candidate_id == first.candidate_id
+    assert channel.test_candidates == [second]
+
+
 @pytest.mark.parametrize(("predicate", "valid"), [("app.VALUE == 2", False), ("app.VALUE == 1", True)])
 def test_registered_candidate_returns_validation_feedback_and_gates_completion(
     tmp_path: Path,
@@ -164,6 +243,10 @@ def test_registered_candidate_returns_validation_feedback_and_gates_completion(
     assert registration.metadata["valid"] is valid
     assert registration.metadata["transition"] == ("F2P" if valid else "F2F")
     assert registration.metadata["recommended_next_action"]
+    if valid:
+        assert registration.metadata["recommended_next_action"] == "Run regression tests and request task completion."
+    else:
+        assert "Fix the implementation" in registration.metadata["recommended_next_action"]
 
     completion = RequestTaskCompletionTool().execute(
         "complete",

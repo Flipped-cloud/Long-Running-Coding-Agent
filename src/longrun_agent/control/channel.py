@@ -48,6 +48,7 @@ class TaskControlChannel:
         minimum_valid_candidates: int = 1,
         max_registration_attempts: int = 3,
         candidate_validator: Callable[[TestCandidate], TestCandidate] | None = None,
+        existing_test_candidates: list[TestCandidate] | None = None,
     ):
         self.signals: list[ControlSignal] = []
         self.workspace = workspace
@@ -60,7 +61,8 @@ class TaskControlChannel:
         self.minimum_valid_candidates = minimum_valid_candidates
         self.max_registration_attempts = max_registration_attempts
         self.candidate_validator = candidate_validator
-        self.test_candidates: list[TestCandidate] = []
+        self.test_candidates: list[TestCandidate] = list(existing_test_candidates or [])
+        self.new_test_candidates: list[TestCandidate] = []
         self.registration_attempt_count = 0
         self.completion_request_count = 0
 
@@ -89,6 +91,7 @@ class TaskControlChannel:
     def valid_test_candidate_count(self) -> int:
         return sum(
             candidate.valid
+            and not candidate.valid_but_irrelevant
             and candidate.transition is not None
             and candidate.baseline_result is not None
             and candidate.candidate_result is not None
@@ -139,8 +142,16 @@ class TaskControlChannel:
         if self.registration_attempt_count >= self.max_registration_attempts:
             raise ValueError("maximum test candidate registration attempts reached")
         self.registration_attempt_count += 1
-        if len(self.test_candidates) >= self.max_test_candidates:
-            raise ValueError("maximum test candidates reached for task session")
+        existing_index = next(
+            (
+                index
+                for index, existing in enumerate(self.test_candidates)
+                if existing.paths == paths and existing.command_argv == command_argv
+            ),
+            None,
+        )
+        if existing_index is None and len(self.test_candidates) >= self.max_test_candidates:
+            raise ValueError("maximum test candidates reached for task")
         candidate = register_test_candidate(
             workspace=self.workspace,
             task_id=self.task_id,
@@ -151,7 +162,13 @@ class TaskControlChannel:
             expected_failure_reason=expected_failure_reason,
             contract=self.verification_contract,
         )
+        if existing_index is not None:
+            candidate.candidate_id = self.test_candidates[existing_index].candidate_id
         if self.candidate_validator is not None:
             candidate = self.candidate_validator(candidate)
-        self.test_candidates.append(candidate)
+        if existing_index is None:
+            self.test_candidates.append(candidate)
+        else:
+            self.test_candidates[existing_index] = candidate
+        self.new_test_candidates.append(candidate)
         return candidate

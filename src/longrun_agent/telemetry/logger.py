@@ -29,29 +29,42 @@ def is_sensitive_key(key: str) -> bool:
     return normalized in SENSITIVE_KEY_NAMES or normalized.endswith(SENSITIVE_KEY_SUFFIXES)
 
 
-def sanitize_payload(value: Any) -> Any:
+def redact_sensitive_values(text: str, sensitive_values: tuple[str, ...] = ()) -> str:
+    for value in sensitive_values:
+        if value:
+            text = text.replace(value, "[redacted]")
+    for name, value in os.environ.items():
+        if value and len(value) >= 8 and is_sensitive_key(name):
+            text = text.replace(value, "[redacted]")
+    return text
+
+
+def sanitize_payload(value: Any, sensitive_values: tuple[str, ...] = ()) -> Any:
     if isinstance(value, dict):
         sanitized: dict[str, Any] = {}
         for key, item in value.items():
             if is_sensitive_key(key):
                 sanitized[key] = "[redacted]"
             else:
-                sanitized[key] = sanitize_payload(item)
+                sanitized[key] = sanitize_payload(item, sensitive_values)
         return sanitized
     if isinstance(value, list):
-        return [sanitize_payload(item) for item in value]
-    if isinstance(value, str) and len(value) > 4000:
-        return value[:2000] + "\n...[truncated]...\n" + value[-2000:]
+        return [sanitize_payload(item, sensitive_values) for item in value]
+    if isinstance(value, str):
+        value = redact_sensitive_values(value, sensitive_values)
+        if len(value) > 4000:
+            return value[:2000] + "\n...[truncated]...\n" + value[-2000:]
     return value
 
 
 class EventLogger:
     """Flush-on-write JSONL event logger for a single run."""
 
-    def __init__(self, run_id: str, run_dir: Path, model_name: str):
+    def __init__(self, run_id: str, run_dir: Path, model_name: str, sensitive_values: tuple[str, ...] = ()):
         self.run_id = run_id
         self.run_dir = run_dir
         self.model_name = model_name
+        self.sensitive_values = sensitive_values
         self.events_path = run_dir / "events.jsonl"
         self.run_json_path = run_dir / "run.json"
         self.prompts_dir = run_dir / "prompts"
@@ -95,19 +108,19 @@ class EventLogger:
             action_type=action_type,
             tool_call_id=tool_call_id,
             tool_name=tool_name,
-            sanitized_arguments=sanitize_payload(sanitized_arguments) if sanitized_arguments else None,
+            sanitized_arguments=sanitize_payload(sanitized_arguments, self.sensitive_values) if sanitized_arguments else None,
             success=success,
-            summary=summary,
+            summary=sanitize_message(summary, self.sensitive_values),
             duration_seconds=duration_seconds,
             exit_code=exit_code,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             artifact_path=artifact_path,
             error_type=error_type,
-            error_message=sanitize_message(error_message),
+            error_message=sanitize_message(error_message, self.sensitive_values),
             retryable=retryable,
-            sanitized_message=sanitize_message(sanitized_message),
-            payload=sanitize_payload(payload or {}),
+            sanitized_message=sanitize_message(sanitized_message, self.sensitive_values),
+            payload=sanitize_payload(payload or {}, self.sensitive_values),
         )
         with self.events_path.open("a", encoding="utf-8") as handle:
             handle.write(record.model_dump_json() + "\n")
@@ -116,23 +129,20 @@ class EventLogger:
 
     def save_prompt(self, step: int, data: dict[str, Any]) -> Path:
         path = self.prompts_dir / f"model-turn-{step:04d}.json"
-        path.write_text(json.dumps(sanitize_payload(data), indent=2), encoding="utf-8")
+        path.write_text(json.dumps(sanitize_payload(data, self.sensitive_values), indent=2), encoding="utf-8")
         return path
 
     def save_run(self, result: RunResult, stats: dict[str, Any] | None = None) -> None:
-        payload = result.model_dump(mode="json")
-        payload["stats"] = sanitize_payload(stats or {})
+        payload = sanitize_payload(result.model_dump(mode="json"), self.sensitive_values)
+        payload["stats"] = sanitize_payload(stats or {}, self.sensitive_values)
         self.run_json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def sanitize_message(message: str | None) -> str | None:
+def sanitize_message(message: str | None, sensitive_values: tuple[str, ...] = ()) -> str | None:
     if message is None:
         return None
     text = message[:1000]
     lowered = text.lower()
     if any(marker in lowered for marker in ("api_key=", "authorization:", "bearer ")):
         return "[redacted sensitive error message]"
-    for name, value in os.environ.items():
-        if value and len(value) >= 8 and is_sensitive_key(name):
-            text = text.replace(value, "[redacted]")
-    return text
+    return redact_sensitive_values(text, sensitive_values)

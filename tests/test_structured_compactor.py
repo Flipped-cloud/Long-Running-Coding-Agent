@@ -70,6 +70,48 @@ def test_deterministic_handoff_preserves_file_evidence(tmp_path: Path):
     assert record.evidence_references
 
 
+def test_deterministic_handoff_drops_unreferenced_repeated_evidence(tmp_path: Path):
+    buffer = buffer_with_write()
+    for step in (2, 3):
+        buffer.add_assistant_tool_turn(
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": f"r{step}", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}],
+            },
+            step=step,
+        )
+        buffer.add_tool_result(
+            {
+                "role": "tool",
+                "tool_call_id": f"r{step}",
+                "name": "read_file",
+                "content": ToolResult(
+                    tool_call_id=f"r{step}",
+                    tool_name="read_file",
+                    success=True,
+                    summary="read ok",
+                    metadata={"path": "a.py", "content_sha256": "abc"},
+                ).model_dump_json(),
+            }
+        )
+        buffer.finalize_turn()
+
+    record = deterministic_handoff(
+        seed=seed(),
+        buffer=buffer,
+        project_id="p1",
+        session_id="s1",
+        source_segment_id=1,
+        target_segment_id=2,
+        plan_version=1,
+        workspace_root=tmp_path,
+    )
+
+    assert len(record.evidence_references) == 1
+    assert record.evidence_references[0].evidence_id == record.files_current[0].evidence_id
+
+
 def test_model_compactor_accepts_native_tool_handoff(tmp_path: Path):
     record = HandoffRecord(
         handoff_id="h-model",

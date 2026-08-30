@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--task-file", type=Path, required=True)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--hidden-tests", type=Path, required=True)
+    parser.add_argument("--generated-test-dir", action="append", default=[])
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args()
 
@@ -83,6 +84,7 @@ def integrity_checks(
     fixture: Path,
     task_file: Path,
     config: Path,
+    generated_test_dirs: list[str] | None = None,
 ) -> tuple[list[str], list[str], list[str]]:
     passed: list[str] = []
     failed: list[str] = []
@@ -119,12 +121,13 @@ def integrity_checks(
 
     ignored_parts = {".git", "__pycache__", ".pytest_cache"}
     allowed_exact = {"README.md", "TASK.md", "pyproject.toml"}
+    allowed_roots = {"workflow_service", "tests", *(generated_test_dirs or [])}
     unauthorized = []
     for path in sorted(workspace.rglob("*")):
         if not path.is_file() or any(part in ignored_parts for part in path.parts):
             continue
         relative = path.relative_to(workspace)
-        if relative.parts[0] in {"workflow_service", "tests"} or relative.as_posix() in allowed_exact:
+        if relative.parts[0] in allowed_roots or relative.as_posix() in allowed_exact:
             continue
         unauthorized.append(relative.as_posix())
     if unauthorized:
@@ -168,7 +171,13 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
         if not path.exists():
             raise ValueError(f"{label} does not exist: {path}")
 
-    passed, failed, violations = integrity_checks(workspace, fixture, task_file, config)
+    passed, failed, violations = integrity_checks(
+        workspace,
+        fixture,
+        task_file,
+        config,
+        args.generated_test_dir,
+    )
     with tempfile.TemporaryDirectory(prefix="long-horizon-oracle-") as temp:
         candidate = Path(temp) / "workspace"
         shutil.copytree(

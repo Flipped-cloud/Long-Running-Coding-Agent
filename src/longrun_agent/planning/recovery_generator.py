@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from longrun_agent.config import BoundedSearchConfig
+from longrun_agent.exceptions import ToolArgumentsProtocolError
 from longrun_agent.model.base import ModelProvider
 from longrun_agent.planning.prompts import RECOVERY_GENERATOR_PROMPT
 from longrun_agent.planning.protocol import RecoveryCandidate
@@ -35,7 +36,20 @@ class RecoveryCandidateGenerator:
         ]
         last_error: Exception | None = None
         for _ in range(self.config.max_protocol_retries):
-            response = self.model.generate(messages, [SUBMIT_RECOVERY_CANDIDATES_SCHEMA])
+            try:
+                response = self.model.generate(messages, [SUBMIT_RECOVERY_CANDIDATES_SCHEMA])
+            except ToolArgumentsProtocolError as exc:
+                last_error = exc
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Tool arguments were invalid JSON: {exc.parse_error}. "
+                            f"Call submit_recovery_candidates again with exactly {self.config.candidate_count} concise candidates."
+                        ),
+                    }
+                )
+                continue
             try:
                 calls = [call for call in response.tool_calls if call.name == "submit_recovery_candidates"]
                 if len(calls) != 1:

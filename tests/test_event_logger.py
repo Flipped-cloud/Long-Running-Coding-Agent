@@ -67,6 +67,28 @@ def test_sanitize_payload_truncates_long_plain_strings():
     assert "[truncated]" in sanitized["message"]
 
 
+def test_sanitize_payload_redacts_sensitive_environment_values(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-value-from-environment")
+
+    sanitized = sanitize_payload({"message": "prefix secret-value-from-environment suffix"})
+
+    assert sanitized["message"] == "prefix [redacted] suffix"
+
+
+def test_event_logger_redacts_configured_api_key_with_custom_environment_name(tmp_path: Path, monkeypatch):
+    secret = "custom-configured-secret"
+    monkeypatch.setenv("MODEL_CREDENTIAL", secret)
+    logger = EventLogger("r1", tmp_path / "r1", "fake", (secret,))
+
+    logger.log(1, "message", summary=f"summary={secret}")
+    logger.save_prompt(1, {"messages": [{"role": "user", "content": f"value={secret}"}]})
+    logger.save_run(run_result(logger).model_copy(update={"final_answer": f"answer={secret}"}))
+
+    assert secret not in logger.events_path.read_text(encoding="utf-8")
+    assert secret not in (logger.prompts_dir / "model-turn-0001.json").read_text(encoding="utf-8")
+    assert secret not in logger.run_json_path.read_text(encoding="utf-8")
+
+
 def test_event_logger_writes_valid_jsonl_run_json_and_redacts_secrets(tmp_path: Path):
     logger = EventLogger("r1", tmp_path / "r1", "fake")
     logger.log(

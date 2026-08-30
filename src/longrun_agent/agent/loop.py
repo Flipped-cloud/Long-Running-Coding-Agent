@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from collections.abc import Callable
@@ -77,7 +78,9 @@ class AgentLoop:
     ) -> RunResult:
         workspace_path = ensure_workspace_root(workspace or self.config.workspace.root)
         run_dir = self.config.telemetry.run_root / self.run_id
-        logger = EventLogger(self.run_id, run_dir, self.config.model.model_name)
+        api_key = os.environ.get(self.config.model.api_key_env, "")
+        sensitive_values = (api_key,) if api_key else ()
+        logger = EventLogger(self.run_id, run_dir, self.config.model.model_name, sensitive_values)
         workspace_policy = WorkspaceAccessPolicy.for_workspace(
             workspace_path,
             evaluation_isolation_enabled=self.config.evaluation.isolation_enabled,
@@ -92,6 +95,8 @@ class AgentLoop:
             config=self.config.tools,
             workspace_policy=workspace_policy,
             subprocess_sandbox=build_subprocess_sandbox(workspace_policy),
+            save_full_tool_outputs=self.config.telemetry.save_full_tool_outputs,
+            sensitive_values=sensitive_values,
         )
         if context_manager is None:
             context_manager = ContextLifecycleManager(

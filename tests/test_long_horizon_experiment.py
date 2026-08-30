@@ -15,11 +15,14 @@ from longrun_agent.verification.schema import CheckVisibility
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIG = REPO_ROOT / "configs" / "long_horizon_real_api.yaml"
+COMPREHENSIVE_CONFIG = REPO_ROOT / "configs" / "comprehensive_real_api.yaml"
 PLAN = REPO_ROOT / "evals" / "long_horizon" / "plan.json"
+COMPREHENSIVE_PLAN = REPO_ROOT / "evals" / "comprehensive" / "plan.json"
 FIXTURE = REPO_ROOT / "examples" / "long_horizon_repo"
 TASK_FILE = REPO_ROOT / "evals" / "long_horizon" / "TASK.md"
 HIDDEN_TESTS = REPO_ROOT / "evals" / "long_horizon" / "hidden_assets" / "hidden_tests"
 CONTRACT = REPO_ROOT / "evals" / "long_horizon" / "verification_contract.yaml"
+COMPREHENSIVE_CONTRACT = REPO_ROOT / "evals" / "comprehensive" / "verification_contract.yaml"
 RUN_SCRIPT = REPO_ROOT / "scripts" / "run_long_horizon_real_api.sh"
 VALIDATOR = REPO_ROOT / "scripts" / "validate_long_horizon_result.py"
 SUMMARIZER = REPO_ROOT / "scripts" / "summarize_long_horizon_run.py"
@@ -88,6 +91,27 @@ def test_long_horizon_config_rejects_missing_runtime_paths(monkeypatch):
         load_config(CONFIG)
 
 
+def test_comprehensive_config_enables_generated_tests_and_adaptive_recovery(tmp_path, monkeypatch):
+    configured_environment(tmp_path, monkeypatch)
+    monkeypatch.setenv("LONGRUN_PLAN_FILE", str(COMPREHENSIVE_PLAN))
+
+    config = load_config(COMPREHENSIVE_CONFIG)
+
+    assert config.planning.mode == "adaptive_search"
+    assert config.planning.initial_plan.min_tasks == config.planning.initial_plan.max_tasks == 5
+    assert config.agent.max_steps == 28
+    assert config.planning.execution.max_project_sessions == 15
+    assert config.planning.execution.max_sessions_per_task == 3
+    assert config.planning.decomposition.max_depth == 1
+    assert config.planning.bounded_search.enabled
+    assert config.context.mode == "structured_reset"
+    assert config.knowledge.mode == "memory_skill"
+    assert config.verification.contract.path == COMPREHENSIVE_CONTRACT.resolve()
+    assert config.verification.generated_tests.enabled
+    assert not config.verification.generated_tests.require_candidate_before_completion
+    assert config.verification.generated_tests.minimum_valid_candidates == 1
+
+
 def test_long_horizon_outputs_are_outside_agent_workspace(tmp_path, monkeypatch):
     configured_environment(tmp_path, monkeypatch)
     config = load_config(CONFIG)
@@ -139,6 +163,21 @@ def test_long_horizon_contract_keeps_hidden_oracle_outside_workspace():
     assert [check.visibility for check in contract.checks] == [CheckVisibility.PUBLIC, CheckVisibility.HIDDEN]
     assert contract.integrity_rules.allowed_change_patterns == ["workflow_service/*.py", "README.md"]
     assert contract.integrity_rules.max_deleted_files == 0
+
+
+def test_comprehensive_plan_and_contract_cover_five_generated_test_tasks():
+    payload = json.loads(COMPREHENSIVE_PLAN.read_text(encoding="utf-8"))
+    tasks = payload["tasks"]
+    assert len(tasks) == 5
+    assert "register" in tasks[0]["objective"].lower()
+    assert all("register" not in task["objective"].lower() for task in tasks[1:])
+    assert tasks[-1]["depends_on_keys"] == [task["key"] for task in tasks[:-1]]
+
+    contract = load_contract(COMPREHENSIVE_CONTRACT, workspace_root=FIXTURE)
+    assert contract.generated_test_policy.enabled
+    assert contract.integrity_rules.allowed_test_directories == ["agent_tests"]
+    assert "agent_tests/*.py" in contract.integrity_rules.allowed_change_patterns
+    assert contract.hidden_assets_root == (REPO_ROOT / "evals" / "long_horizon" / "hidden_assets").resolve()
 
 
 def write_project_artifacts(root: Path, project_id: str, status: str, *, include_optional: bool) -> tuple[Path, Path]:
@@ -291,6 +330,44 @@ def test_validator_detects_test_tampering_and_always_writes_json(tmp_path):
     assert payload["violations"]
 
 
+def test_validator_allows_declared_generated_test_directory(tmp_path):
+    workspace = tmp_path / "workspace"
+    shutil.copytree(FIXTURE, workspace)
+    shutil.copy2(TASK_FILE, workspace / "TASK.md")
+    generated = workspace / "agent_tests" / "test_generated.py"
+    generated.parent.mkdir()
+    generated.write_text("def test_generated():\n    assert True\n", encoding="utf-8")
+    output = tmp_path / "oracle.json"
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(VALIDATOR),
+            "--workspace",
+            str(workspace),
+            "--fixture",
+            str(FIXTURE),
+            "--task-file",
+            str(TASK_FILE),
+            "--config",
+            str(COMPREHENSIVE_CONFIG),
+            "--hidden-tests",
+            str(HIDDEN_TESTS),
+            "--generated-test-dir",
+            "agent_tests",
+            "--output",
+            str(output),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert "workspace_change_scope_respected" in payload["passed_checks"]
+    assert not any("agent_tests" in violation for violation in payload["violations"])
+
+
 def test_run_script_fails_fast_without_api_environment(tmp_path):
     environment = os.environ.copy()
     for name in ("MODEL_NAME", "OPENAI_BASE_URL", "OPENAI_API_KEY"):
@@ -343,3 +420,10 @@ def test_long_horizon_shell_script_has_valid_bash_syntax():
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_run_script_creates_an_isolated_workspace_repository_before_execution():
+    script = RUN_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'git -C "$WORKSPACE" init --quiet' in script
+    assert script.index('git -C "$WORKSPACE" init --quiet') < script.index('echo "[baseline] $CASE_DESCRIPTION"')
