@@ -34,9 +34,7 @@ def decomposition_call(parent_id, children):
 def test_decomposer_success():
     parent = TaskNode(id="t1", key="T1", title="T1", objective="parent", acceptance_criteria=["done"])
     provider = CapturingProvider([decomposition_call("t1", [child("C1"), child("C2", ["C1"])])])
-    decomposer = AsNeededDecomposer(
-        provider, DecompositionConfig(min_children=2, max_children=4, max_depth=3)
-    )
+    decomposer = AsNeededDecomposer(provider, DecompositionConfig(min_children=2, max_children=4, max_depth=3))
     children = decomposer.decompose(parent, "blocked")
     assert [task.parent_id for task in children] == ["t1", "t1"]
     assert children[1].dependencies == ["t1:C1"]

@@ -330,11 +330,7 @@ class ProjectOrchestrator:
             task_ids.add(parent_id)
             parent = state.task_by_id(parent_id)
             parent_id = parent.parent_id
-        candidates = [
-            candidate
-            for task_id in task_ids
-            for candidate in self.verification_store.list_test_candidates(task_id=task_id)
-        ]
+        candidates = [candidate for task_id in task_ids for candidate in self.verification_store.list_test_candidates(task_id=task_id)]
         return sorted(candidates, key=lambda candidate: candidate.created_at)
 
     def _validate_registered_test_candidate(self, state: ProjectState, candidate: TestCandidate) -> TestCandidate:
