@@ -18,8 +18,8 @@ from longrun_agent.tools.base import ToolContext
 from longrun_agent.verification.generated_tests import TestCandidateValidator as CandidateValidator
 from longrun_agent.verification.generated_tests import register_test_candidate
 from longrun_agent.verification.runner import VerificationRunner
-from longrun_agent.verification.schema import TestTransition as Transition
 from longrun_agent.verification.schema import TestCandidate as CandidateSchema
+from longrun_agent.verification.schema import TestTransition as Transition
 from longrun_agent.verification.snapshot import CopySnapshotProvider
 
 
