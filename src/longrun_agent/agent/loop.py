@@ -185,6 +185,10 @@ class AgentLoop:
                     )
             tools_for_request = self._schemas(terminal_tools_only=terminal_tools_only)
             preparation = context_manager.prepare(context_buffer, tools_for_request, step=step)
+            if preparation.reset_performed:
+                start_context_segment = getattr(self.router, "start_context_segment", None)
+                if start_context_segment:
+                    start_context_segment()
             logger.log(step, "context_budget_measured", action_type="context", payload=preparation.budget_before.model_dump(mode="json"))
             if preparation.action == ContextPreparationAction.BUDGET_EXHAUSTED:
                 status = RunStatus.CONTEXT_BUDGET_EXHAUSTED

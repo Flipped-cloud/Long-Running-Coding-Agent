@@ -1330,6 +1330,9 @@ class ProjectOrchestrator:
 
     def _write_metrics(self, state: ProjectState, project_started: float | None = None) -> None:
         wall_clock_seconds = None if project_started is None else max(0.0, time.monotonic() - project_started)
+        verification_verdict = None
+        if state.latest_project_verification_report_id and self.verification_store:
+            verification_verdict = self.verification_store.load_report(state.latest_project_verification_report_id).verdict.value
         self.store.write_metrics(
             state.project_id,
             project_statistics(
@@ -1338,6 +1341,7 @@ class ProjectOrchestrator:
                 configured_max_project_seconds=self.config.planning.execution.max_project_seconds,
                 wall_clock_seconds=wall_clock_seconds,
                 final_verification_exit_code=self._last_final_verification_exit_code,
+                final_verification_verdict=verification_verdict,
             ),
         )
 
@@ -1707,6 +1711,9 @@ class _ChannelRouter(ToolRouter):
 
     def record_protocol_retry(self) -> None:
         self.trace.record_protocol_retry()
+
+    def start_context_segment(self) -> None:
+        self.trace.start_context_segment()
 
     def knowledge_decision_pending(self) -> bool:
         return bool(

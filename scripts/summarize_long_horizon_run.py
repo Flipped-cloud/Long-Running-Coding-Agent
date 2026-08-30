@@ -73,13 +73,13 @@ def build_summary(args: argparse.Namespace) -> dict[str, Any]:
     prompt_tokens = sum(int(session.get("input_tokens_total") or 0) for session in sessions)
     completion_tokens = sum(int(session.get("output_tokens_total") or 0) for session in sessions)
     total_tokens = int(metrics.get("total_tokens") or sum(int(session.get("total_tokens") or 0) for session in sessions))
-    final_passed = metrics.get("final_verification_passed")
-    if final_passed is True:
-        final_verification_status = "passed"
-    elif final_passed is False:
-        final_verification_status = "failed"
-    else:
-        final_verification_status = "not_recorded"
+    final_verification_status = str(metrics.get("final_verification_status") or "not_recorded")
+    report_id = state.get("latest_project_verification_report_id")
+    if report_id:
+        report, report_warning = read_json(project_dir / "verification" / "reports" / f"{report_id}.json")
+        if report_warning:
+            warnings.append(report_warning)
+        final_verification_status = str(report.get("verdict") or final_verification_status)
 
     elapsed_seconds = max(0.0, args.elapsed_seconds)
     return {

@@ -201,3 +201,15 @@ def test_repeated_reads_are_recorded_as_telemetry() -> None:
 
     assert trace.repeated_tool_calls
     assert trace.suppressed_tool_calls == []
+
+
+def test_context_segment_restarts_repeat_tracking() -> None:
+    trace = SessionTrace()
+    call = ToolCall(id="a1", name="read_file", arguments={"path": "a.py"})
+    result = ToolResult(tool_call_id="a1", tool_name="read_file", success=True, summary="read succeeded")
+
+    trace.record(call, result)
+    trace.start_context_segment()
+    trace.record(call.model_copy(update={"id": "a2"}), result.model_copy(update={"tool_call_id": "a2"}))
+
+    assert trace.repeated_tool_calls == []

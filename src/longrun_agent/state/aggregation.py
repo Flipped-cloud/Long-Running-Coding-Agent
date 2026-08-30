@@ -67,6 +67,7 @@ def project_statistics(
     configured_max_project_seconds: int | None = None,
     wall_clock_seconds: float | None = None,
     final_verification_exit_code: int | None = None,
+    final_verification_verdict: str | None = None,
 ) -> dict[str, Any]:
     sessions = sessions or []
     derived_tool_calls = sum(int(session.get("tool_call_count", 0)) for session in sessions)
@@ -127,7 +128,20 @@ def project_statistics(
         "changed_file_count": len(changed_files),
         "successful_test_command_count": sum(len(session.get("successful_test_commands") or []) for session in sessions),
         "final_verification_exit_code": final_verification_exit_code,
-        "final_verification_passed": final_verification_exit_code == 0 if final_verification_exit_code is not None else None,
+        "final_verification_status": (
+            final_verification_verdict
+            if final_verification_verdict is not None
+            else ("passed" if final_verification_exit_code == 0 else "failed")
+            if final_verification_exit_code is not None
+            else "not_recorded"
+        ),
+        "final_verification_passed": (
+            final_verification_verdict == "verified"
+            if final_verification_verdict is not None
+            else final_verification_exit_code == 0
+            if final_verification_exit_code is not None
+            else None
+        ),
         "terminal_grace_turn_count": sum(int(session.get("terminal_grace_turn_count") or 0) for session in sessions),
         "terminal_signal_recovered_count": sum(1 for session in sessions if session.get("terminal_signal_recovered")),
         "unsupported_shell_syntax_count": sum(int(session.get("unsupported_shell_syntax_count") or 0) for session in sessions),

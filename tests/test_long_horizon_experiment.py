@@ -214,6 +214,13 @@ def write_project_artifacts(root: Path, project_id: str, status: str, *, include
         encoding="utf-8",
     )
     if include_optional:
+        report_id = f"REPORT-{project_id}"
+        state["latest_project_verification_report_id"] = report_id
+        (project_dir / "project_state.json").write_text(json.dumps(state), encoding="utf-8")
+        reports_dir = project_dir / "verification" / "reports"
+        reports_dir.mkdir(parents=True)
+        verdict = "verified" if status == "verified" else "inconclusive"
+        (reports_dir / f"{report_id}.json").write_text(json.dumps({"verdict": verdict}), encoding="utf-8")
         (project_dir / "project_metrics.json").write_text(
             json.dumps(
                 {
@@ -221,7 +228,8 @@ def write_project_artifacts(root: Path, project_id: str, status: str, *, include
                     "total_tokens": 150,
                     "total_context_resets": 1,
                     "repeated_tool_calls": 1,
-                    "final_verification_passed": status == "candidate_complete",
+                    "final_verification_status": "not_recorded",
+                    "final_verification_passed": None,
                 }
             ),
             encoding="utf-8",
@@ -232,8 +240,8 @@ def write_project_artifacts(root: Path, project_id: str, status: str, *, include
 @pytest.mark.parametrize(
     ("status", "include_optional", "expected_verification"),
     [
-        ("candidate_complete", True, "passed"),
-        ("failed", True, "failed"),
+        ("verified", True, "verified"),
+        ("failed", True, "inconclusive"),
         ("time_limit_reached", False, "not_recorded"),
     ],
 )

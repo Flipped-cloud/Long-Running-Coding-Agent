@@ -100,6 +100,20 @@ class ContextLifecycleManager:
                 if self.budget.should_hard_stop(before):
                     return self._budget_exhausted(original_messages, before, step, "structured_reset hard_stop_ratio exceeded")
                 return self._result(ContextPreparationAction.UNCHANGED, original_messages, before, before, step)
+            self._emit("context_pruning_started", self._base_payload(step=step, snapshot=before))
+            outcome = self.pruner.prune(buffer, tools, before_tokens=before.estimated_total_tokens)
+            after_prune = self.budget.measure(outcome.messages, tools)
+            self._record_prune(outcome.report)
+            self._emit("context_pruning_finished", prune_payload(self._base_payload(step=step, snapshot=after_prune), outcome.report))
+            if not after_prune.trigger_exceeded:
+                return self._result(
+                    ContextPreparationAction.PRUNED,
+                    outcome.messages,
+                    before,
+                    after_prune,
+                    step,
+                    pruned=True,
+                )
             return self._perform_structured_reset(buffer, tools, before, step)
 
         self._emit("context_pruning_started", self._base_payload(step=step, snapshot=before))

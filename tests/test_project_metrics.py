@@ -40,6 +40,7 @@ def test_project_metrics_are_derived_from_sessions(tmp_path: Path):
         "changed_file_count",
         "successful_test_command_count",
         "final_verification_exit_code",
+        "final_verification_status",
         "final_verification_passed",
         "terminal_grace_turn_count",
         "terminal_signal_recovered_count",

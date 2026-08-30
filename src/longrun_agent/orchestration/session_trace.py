@@ -161,6 +161,9 @@ class SessionTrace:
     def record_protocol_retry(self) -> None:
         self.tool_argument_protocol_retry_count += 1
 
+    def start_context_segment(self) -> None:
+        self._seen_calls.clear()
+
     def handoff_summary(self, result: RunResult) -> str:
         completed_work = [f"modified {path}" for path in self.changed_files] or ["none recorded"]
         passed = [

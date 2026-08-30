@@ -66,6 +66,9 @@ def test_premature_completion_reopens_then_verifies_without_hidden_leak(tmp_path
     assert final_state.status.value == "verified"
     assert final_state.tasks[0].status.value == "verified"
     assert [report.verdict.value for report in reports] == ["partial", "verified"]
+    metrics = json.loads(state_store.metrics_path("v05-e2e").read_text(encoding="utf-8"))
+    assert metrics["final_verification_status"] == "verified"
+    assert metrics["final_verification_passed"] is True
     assert sum(event["event_type"] == "task_completion_requested" for event in state_store.read_events("v05-e2e")) == 2
     assert final_state.tasks[0].reopen_count == 1
 
