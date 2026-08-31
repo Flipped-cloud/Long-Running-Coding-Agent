@@ -251,14 +251,8 @@ def _knowledge_session_record(workspace: Path, *, changed_files: list[str]) -> d
 
 
 def test_knowledge_config_modes_and_validation() -> None:
-    for name in [
-        "knowledge_disabled.yaml",
-        "knowledge_raw_episode.yaml",
-        "knowledge_reflection.yaml",
-        "knowledge_verified_memory.yaml",
-        "knowledge_memory_skill.yaml",
-    ]:
-        assert load_config(Path("configs") / name).knowledge.mode
+    for mode in ["disabled", "raw_episode", "reflection", "verified_memory", "memory_skill"]:
+        assert KnowledgeConfig(mode=mode).mode == mode
     with pytest.raises(ValidationError, match="auto_execute"):
         KnowledgeConfig(skill={"auto_execute": True})
     with pytest.raises(ValidationError, match="positive knowledge retrieval weight"):
@@ -419,10 +413,11 @@ def test_report_knowledge_use_records_reviewed_not_used_decision(tmp_path: Path)
 
 def test_reviewed_not_used_decision_is_persisted_by_orchestrator(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
-    cfg = load_config(Path("configs/planning_static.yaml"))
+    cfg = load_config(Path("configs/fake.yaml"))
     cfg.workspace.root = workspace
     cfg.telemetry.run_root = tmp_path / "runs"
     cfg.state.root = tmp_path / "projects"
+    cfg.planning.mode = "static"
     cfg.planning.initial_plan.min_tasks = 1
     cfg.planning.initial_plan.max_tasks = 1
     cfg.planning.execution.max_project_sessions = 1

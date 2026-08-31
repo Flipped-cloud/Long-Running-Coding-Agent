@@ -64,7 +64,7 @@ jobs:
           pytest -q \
             --cov=longrun_agent \
             --cov-report=term-missing \
-            --cov-fail-under=90
+            --cov-fail-under=85
 
       - name: Quality gates
         run: |

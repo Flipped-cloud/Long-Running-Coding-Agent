@@ -25,7 +25,6 @@ from longrun_agent.state.store import ProjectStateStore
 app = typer.Typer(add_completion=False)
 project_app = typer.Typer(add_completion=False)
 context_app = typer.Typer(add_completion=False)
-eval_app = typer.Typer(add_completion=False)
 verify_app = typer.Typer(add_completion=False)
 verify_contract_app = typer.Typer(add_completion=False)
 knowledge_app = typer.Typer(add_completion=False)
@@ -35,7 +34,6 @@ knowledge_retrieval_app = typer.Typer(add_completion=False)
 sandbox_app = typer.Typer(add_completion=False)
 app.add_typer(project_app, name="project")
 app.add_typer(context_app, name="context")
-app.add_typer(eval_app, name="eval")
 app.add_typer(verify_app, name="verify")
 verify_app.add_typer(verify_contract_app, name="contract")
 app.add_typer(knowledge_app, name="knowledge")
@@ -162,7 +160,7 @@ def _task_text(task: str | None, task_file: Path | None) -> str:
 
 @project_app.command("start")
 def project_start(
-    config: Path = typer.Option(Path("configs/planning_static.yaml"), exists=True, file_okay=True, dir_okay=False),
+    config: Path = typer.Option(..., exists=True, file_okay=True, dir_okay=False),
     task: str | None = typer.Option(None),
     task_file: Path | None = typer.Option(None, exists=True, file_okay=True, dir_okay=False),
     project_id: str | None = typer.Option(None),
@@ -179,7 +177,7 @@ def project_start(
 
 @project_app.command("resume")
 def project_resume(
-    config: Path = typer.Option(Path("configs/planning_static.yaml"), exists=True, file_okay=True, dir_okay=False),
+    config: Path = typer.Option(..., exists=True, file_okay=True, dir_okay=False),
     project_id: str = typer.Option(...),
     scripted_responses: Path | None = typer.Option(None, exists=True, file_okay=True, dir_okay=False),
 ) -> None:
@@ -302,7 +300,7 @@ def _skill_status_filter(status: str | None) -> dict[str, object] | None:
 
 @project_app.command("status")
 def project_status(
-    config: Path = typer.Option(Path("configs/planning_static.yaml"), exists=True, file_okay=True, dir_okay=False),
+    config: Path = typer.Option(..., exists=True, file_okay=True, dir_okay=False),
     project_id: str = typer.Option(...),
 ) -> None:
     store, app_config = _store(config)
@@ -343,7 +341,7 @@ def _print_task_tree(state: ProjectState, task: TaskNode, indent: int = 0) -> No
 
 @project_app.command("tree")
 def project_tree(
-    config: Path = typer.Option(Path("configs/planning_static.yaml"), exists=True, file_okay=True, dir_okay=False),
+    config: Path = typer.Option(..., exists=True, file_okay=True, dir_okay=False),
     project_id: str = typer.Option(...),
 ) -> None:
     store, app_config = _store(config)
@@ -355,7 +353,7 @@ def project_tree(
 
 @project_app.command("metrics")
 def project_metrics(
-    config: Path = typer.Option(Path("configs/planning_static.yaml"), exists=True, file_okay=True, dir_okay=False),
+    config: Path = typer.Option(..., exists=True, file_okay=True, dir_okay=False),
     project_id: str = typer.Option(...),
 ) -> None:
     store, _app_config = _store(config)
@@ -368,7 +366,7 @@ def project_metrics(
 
 @knowledge_memories_app.command("list")
 def knowledge_memories_list(
-    config: Path = typer.Option(Path("configs/knowledge_verified_memory.yaml"), exists=True, file_okay=True, dir_okay=False),
+    config: Path = typer.Option(..., exists=True, file_okay=True, dir_okay=False),
     status: str | None = typer.Option(None, help="Filter by memory status."),
 ) -> None:
     store, _app_config = _knowledge_store(config)
@@ -391,7 +389,7 @@ def knowledge_memories_list(
 @knowledge_memories_app.command("show")
 def knowledge_memories_show(
     memory_id: str,
-    config: Path = typer.Option(Path("configs/knowledge_verified_memory.yaml"), exists=True, file_okay=True, dir_okay=False),
+    config: Path = typer.Option(..., exists=True, file_okay=True, dir_okay=False),
 ) -> None:
     store, _app_config = _knowledge_store(config)
     try:
@@ -404,7 +402,7 @@ def knowledge_memories_show(
 @knowledge_memories_app.command("invalidate")
 def knowledge_memories_invalidate(
     memory_id: str,
-    config: Path = typer.Option(Path("configs/knowledge_verified_memory.yaml"), exists=True, file_okay=True, dir_okay=False),
+    config: Path = typer.Option(..., exists=True, file_okay=True, dir_okay=False),
     reason: str = typer.Option("manually updated through CLI", help="Reason for the status change."),
 ) -> None:
     store, _app_config = _knowledge_store(config)
@@ -417,7 +415,7 @@ def knowledge_memories_invalidate(
 
 @knowledge_skills_app.command("list")
 def knowledge_skills_list(
-    config: Path = typer.Option(Path("configs/knowledge_memory_skill.yaml"), exists=True, file_okay=True, dir_okay=False),
+    config: Path = typer.Option(..., exists=True, file_okay=True, dir_okay=False),
     status: str | None = typer.Option(None, help="Filter by skill status."),
 ) -> None:
     store, _app_config = _knowledge_store(config)
@@ -441,7 +439,7 @@ def knowledge_skills_list(
 @knowledge_skills_app.command("show")
 def knowledge_skills_show(
     skill_id: str,
-    config: Path = typer.Option(Path("configs/knowledge_memory_skill.yaml"), exists=True, file_okay=True, dir_okay=False),
+    config: Path = typer.Option(..., exists=True, file_okay=True, dir_okay=False),
 ) -> None:
     store, _app_config = _knowledge_store(config)
     try:
@@ -454,7 +452,7 @@ def knowledge_skills_show(
 @knowledge_skills_app.command("deprecate")
 def knowledge_skills_deprecate(
     skill_id: str,
-    config: Path = typer.Option(Path("configs/knowledge_memory_skill.yaml"), exists=True, file_okay=True, dir_okay=False),
+    config: Path = typer.Option(..., exists=True, file_okay=True, dir_okay=False),
     reason: str = typer.Option("manually updated through CLI", help="Reason for the status change."),
 ) -> None:
     store, _app_config = _knowledge_store(config)
@@ -468,7 +466,7 @@ def knowledge_skills_deprecate(
 @knowledge_retrieval_app.command("explain")
 def knowledge_retrieval_explain(
     task: str = typer.Option(..., help="Task objective to explain retrieval for."),
-    config: Path = typer.Option(Path("configs/knowledge_memory_skill.yaml"), exists=True, file_okay=True, dir_okay=False),
+    config: Path = typer.Option(..., exists=True, file_okay=True, dir_okay=False),
     project_id: str | None = typer.Option(None),
 ) -> None:
     if not task.strip():
@@ -499,7 +497,7 @@ def knowledge_retrieval_explain(
 
 @context_app.command("inspect")
 def context_inspect(
-    config: Path = typer.Option(Path("configs/planning_static.yaml"), exists=True, file_okay=True, dir_okay=False),
+    config: Path = typer.Option(..., exists=True, file_okay=True, dir_okay=False),
     project_id: str = typer.Option(...),
     session_id: str | None = typer.Option(None),
 ) -> None:
@@ -532,59 +530,13 @@ def context_inspect(
 
 @context_app.command("handoff")
 def context_handoff(
-    config: Path = typer.Option(Path("configs/planning_static.yaml"), exists=True, file_okay=True, dir_okay=False),
+    config: Path = typer.Option(..., exists=True, file_okay=True, dir_okay=False),
     project_id: str = typer.Option(...),
     handoff_id: str = typer.Option(...),
 ) -> None:
     store, _app_config = _store(config)
     record = store.load_handoff(project_id, handoff_id)
     console.print_json(record.model_dump_json())
-
-
-@eval_app.command("context")
-def eval_context(
-    config: Path = typer.Option(Path("evals/context_lifecycle/config.yaml"), exists=True, file_okay=True, dir_okay=False),
-    probe: str = typer.Option("position"),
-    lengths: str = typer.Option("2048,4096,8192"),
-    samples: int = typer.Option(20, min=1),
-    seed: int | None = typer.Option(None),
-    modes: str | None = typer.Option(None),
-    output_dir: Path | None = typer.Option(None, file_okay=False, dir_okay=True),
-    dry_run: bool = typer.Option(False),
-    fake_provider_script: Path | None = typer.Option(None, exists=True, file_okay=True, dir_okay=False),
-) -> None:
-    from longrun_agent.context_probes.runner import run_probe
-
-    result = run_probe(
-        config_path=config,
-        probe=probe,
-        lengths=[int(item) for item in lengths.split(",") if item],
-        samples=samples,
-        seed=seed,
-        modes=[item for item in modes.split(",") if item] if modes else None,
-        output_dir=output_dir,
-        dry_run=dry_run,
-        fake_provider_script=fake_provider_script,
-    )
-    console.print_json(json.dumps(result))
-
-
-@eval_app.command("experience-learning")
-def eval_experience_learning(
-    config: Path = typer.Option(Path("evals/experience_learning/config.yaml"), exists=True, file_okay=True, dir_okay=False),
-    backend: str | None = typer.Option(None),
-    mode: str | None = typer.Option(None),
-    repeat: int | None = typer.Option(None),
-    dry_run: bool = typer.Option(False),
-) -> None:
-    from longrun_agent.evals.experience_learning.runner import run_experience_learning
-
-    try:
-        result = run_experience_learning(config, backend=backend, mode=mode, repeat=repeat, dry_run=dry_run)
-    except ConfigurationError as exc:
-        typer.echo(f"configuration error: {exc}", err=True)
-        raise typer.Exit(code=1) from None
-    console.print_json(json.dumps(result))
 
 
 @verify_contract_app.command("validate")
@@ -679,112 +631,6 @@ def verify_report(
         "feedback": render_agent_feedback(report),
     }
     console.print_json(json.dumps(payload))
-
-
-@eval_app.command("run")
-def eval_run(
-    manifest: Path = typer.Option(..., exists=True, file_okay=True, dir_okay=False),
-) -> None:
-    from longrun_agent.evaluation.adapters.local_project import LocalProjectAdapter
-    from longrun_agent.evaluation.coordinator import EvaluationCoordinator
-    from longrun_agent.evaluation.fake_provider import verification_bench_fake_provider
-    from longrun_agent.evaluation.schema import load_evaluation_manifest
-
-    loaded = load_evaluation_manifest(manifest)
-
-    def provider_factory(config, case, seed):
-        if config.model.provider == "fake":
-            return verification_bench_fake_provider(config, case, seed)
-        return _provider(config)
-
-    adapter = LocalProjectAdapter(provider_factory)
-    report = EvaluationCoordinator(
-        loaded,
-        {"local_project": adapter},
-        continue_on_case_error=True,
-        preserve_workspaces=False,
-    ).run()
-    console.print_json(json.dumps(report))
-
-
-@eval_app.command("report")
-def eval_report(
-    evaluation_id: str = typer.Option(...),
-    root: Path = typer.Option(Path(".runs/evaluations"), file_okay=False),
-) -> None:
-    path = root / evaluation_id / "report.json"
-    if not path.exists():
-        raise typer.BadParameter(f"evaluation report not found: {path}")
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    overall = payload.get("aggregate", {}).get("overall", {}).get("all", {})
-    metrics = overall.get("metrics", {})
-    payload["runtime_oracle_summary"] = {
-        "runtime_verification_verdict": overall.get("runtime_verification_verdict_distribution", {}),
-        "oracle_evaluation_verdict": overall.get("oracle_verification_verdict_distribution", {}),
-        "oracle_f2p": metrics.get("f2p_rate", {}),
-        "oracle_p2p": metrics.get("p2p_rate", {}),
-        "oracle_integrity": metrics.get("integrity_passed", {}),
-        "runtime_oracle_disagreement": overall.get("runtime_oracle_disagreement_count", 0),
-        "completion_precision": metrics.get("completion_precision", {}),
-        "false_completion": metrics.get("false_completion_count", {}),
-    }
-    console.print_json(json.dumps(payload))
-
-
-@eval_app.command("rebuild-report")
-def eval_rebuild_report(
-    run_root: Path = typer.Option(..., exists=True, file_okay=False),
-) -> None:
-    from longrun_agent.evaluation.rebuild import rebuild_evaluation_report
-
-    console.print_json(json.dumps(rebuild_evaluation_report(run_root)))
-
-
-@eval_app.command("leakage-check")
-def eval_leakage_check(
-    run_root: Path = typer.Option(..., exists=True, file_okay=False),
-) -> None:
-    from longrun_agent.evaluation.leakage import check_evaluation_leakage
-
-    report = check_evaluation_leakage(run_root)
-    console.print_json(json.dumps(report))
-    if report["leak_count"]:
-        raise typer.Exit(code=2)
-
-
-@eval_app.command("failures")
-def eval_failures(
-    evaluation_id: str = typer.Option(...),
-    layer: str | None = typer.Option(None),
-    root: Path = typer.Option(Path(".runs/evaluations"), file_okay=False),
-) -> None:
-    from longrun_agent.evaluation.reporting import read_trial_results
-
-    rows = read_trial_results(root / evaluation_id / "trials.jsonl")
-    failures = [
-        row.attribution.model_dump(mode="json")
-        for row in rows
-        if row.attribution is not None and (layer is None or row.attribution.primary_layer.value == layer)
-    ]
-    console.print_json(json.dumps(failures))
-
-
-@eval_app.command("review-failure")
-def eval_review_failure(
-    evaluation_id: str = typer.Option(...),
-    attribution_id: str = typer.Option(...),
-    label: str = typer.Option(...),
-    root: Path = typer.Option(Path(".runs/evaluations"), file_okay=False),
-) -> None:
-    from longrun_agent.state.schema import utc_now
-
-    path = root / evaluation_id / "reviews" / f"{attribution_id}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"attribution_id": attribution_id, "reviewer_label": label, "reviewed_at": utc_now()}, indent=2),
-        encoding="utf-8",
-    )
-    console.print_json(path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

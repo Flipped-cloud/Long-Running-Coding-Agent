@@ -47,12 +47,3 @@ verification:
     assert payload["valid"] is True
     assert payload["hidden_checks"] == 1
     assert "Secret assertion title" not in result.stdout
-
-
-def test_eval_report_command_reads_existing_report(tmp_path: Path) -> None:
-    report = tmp_path / "eval" / "report.json"
-    report.parent.mkdir()
-    report.write_text('{"evaluation_id": "eval", "completed_count": 1}', encoding="utf-8")
-    result = CliRunner().invoke(app, ["eval", "report", "--evaluation-id", "eval", "--root", str(tmp_path)])
-    assert result.exit_code == 0
-    assert json.loads(result.stdout)["completed_count"] == 1

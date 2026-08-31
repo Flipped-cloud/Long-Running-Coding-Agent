@@ -1,5 +1,5 @@
 model: {provider: fake, model_name: fake-scripted}
-workspace: {root: ../examples/verification_bench/full_fix}
+workspace: {root: ../examples/toy_repo}
 planning:
   mode: static
   initial_plan: {min_tasks: 1, max_tasks: 1, max_protocol_retries: 2}

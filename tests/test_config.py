@@ -84,22 +84,6 @@ def test_planning_config_validation(tmp_path: Path):
         AppConfig.model_validate(cfg)
 
 
-def test_glm47_30min_config_loads_file_plan(monkeypatch):
-    monkeypatch.setenv("MODEL_NAME", "glm-4.7-flash")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
-    cfg = load_config("configs/planning_static_glm47_30min.yaml")
-    assert cfg.planning.initial_plan.source == "file"
-    assert cfg.planning.initial_plan.plan_file.name == "plan_glm47_fast.json"
-    assert cfg.planning.initial_plan.plan_file.exists()
-    assert cfg.workspace.root.exists()
-    assert cfg.planning.execution.max_project_seconds == 1680
-    assert cfg.planning.execution.max_project_sessions == 8
-    assert cfg.planning.execution.max_sessions_per_task == 2
-    assert cfg.agent.max_steps == 12
-    assert cfg.agent.terminal_grace_turns == 1
-    assert cfg.agent.protocol_retries_per_step == 2
-
-
 def test_completion_only_config_has_no_runtime_final_command() -> None:
     disabled = load_config("configs/verification_disabled.yaml")
     legacy = load_config("configs/legacy_command.yaml")
