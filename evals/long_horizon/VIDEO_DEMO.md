@@ -20,8 +20,8 @@ The static plan is intentional: it keeps the demonstration reproducible while st
 Prepare the environment before recording so the API key is never visible:
 
 ```bash
-cd /path/to/Long-Running-Coding-Agent
-source ~/venvs/longrun-agent/bin/activate
+cd /path/to/Coding-Agent
+source ~/venvs/coding-agent/bin/activate
 export OPENAI_API_KEY="..."
 export OPENAI_BASE_URL="https://your-compatible-endpoint/v1"
 export MODEL_NAME="your-tool-calling-model"

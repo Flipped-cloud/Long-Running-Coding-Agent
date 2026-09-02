@@ -16,7 +16,7 @@ if (( missing_env != 0 )); then
 fi
 
 PYTHON_BIN="${LONGRUN_PYTHON_BIN:-python}"
-AGENT_BIN="${LONGRUN_AGENT_BIN:-longrun-agent}"
+AGENT_BIN="${LONGRUN_AGENT_BIN:-coding-agent}"
 CASE_PROFILE="${CASE_PROFILE:-long_horizon}"
 REQUESTED_PROJECT_ID="${PROJECT_ID:-}"
 RESUME_PROJECT="${RESUME_PROJECT:-0}"
@@ -88,7 +88,7 @@ else
   git -C "$WORKSPACE" init --quiet
   git -C "$WORKSPACE" config --local core.excludesFile "$REPO_ROOT/.gitignore"
   git -C "$WORKSPACE" add .
-  git -C "$WORKSPACE" -c user.name=Longrun-Agent -c user.email=longrun-agent@local commit --quiet -m baseline
+  git -C "$WORKSPACE" -c user.name=Coding-Agent -c user.email=coding-agent@local commit --quiet -m baseline
 fi
 
 export LONGRUN_WORKSPACE="$WORKSPACE"

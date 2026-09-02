@@ -1,1 +1,1 @@
-"""Evaluation scaffolds for longrun-agent."""
+"""Evaluation scaffolds for coding-agent."""

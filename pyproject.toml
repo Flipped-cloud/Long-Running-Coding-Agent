@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "longrun-agent"
+name = "coding-agent"
 version = "0.5.5"
 description = "A minimal coding agent runtime with native tool calling."
 requires-python = ">=3.11"
@@ -20,7 +20,7 @@ dependencies = [
 dev = ["pytest>=7.0.0", "pytest-cov>=4.0.0", "ruff>=0.5.0"]
 
 [project.scripts]
-longrun-agent = "longrun_agent.cli:app"
+coding-agent = "longrun_agent.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
